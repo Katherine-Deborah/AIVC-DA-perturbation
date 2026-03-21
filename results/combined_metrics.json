@@ -1,0 +1,34 @@
+{
+  "models": {
+    "Mean Baseline": {
+      "pearson_all_mean": 0.9988,
+      "pearson_top20_mean": 0.9951,
+      "mse_mean": 0.0005,
+      "r2_mean": 0.9974,
+      "n_test_perturbations": 20
+    },
+    "scGen": {
+      "pearson_all_mean": 0.9938,
+      "pearson_top20_mean": 0.9523,
+      "mse_mean": 0.0025,
+      "r2_mean": 0.9862,
+      "n_test_perturbations": 20
+    },
+    "GEARS": {
+      "pearson_all_mean": 0.9965,
+      "pearson_top20_mean": 0.9733,
+      "mse_mean": 0.00137,
+      "pearson_delta": 0.2618,
+      "frac_wrong_direction_top20": 0.337,
+      "n_test_perturbations": 46,
+      "split": "unseen_single (simulation)",
+      "best_epoch_val_mse_de": 0.0041
+    }
+  },
+  "metrics_key": [
+    "pearson_all_mean",
+    "pearson_top20_mean",
+    "mse_mean",
+    "r2_mean"
+  ]
+}

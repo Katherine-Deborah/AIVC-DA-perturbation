@@ -1,0 +1,10 @@
+{
+  "pearson_all_mean": 0.9965,
+  "pearson_top20_mean": 0.9733,
+  "mse_mean": 0.00137,
+  "pearson_delta": 0.2618,
+  "frac_wrong_direction_top20": 0.337,
+  "n_test_perturbations": 46,
+  "split": "unseen_single (simulation)",
+  "best_epoch_val_mse_de": 0.0041
+}

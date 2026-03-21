@@ -1,0 +1,117 @@
+ Report Draft — Sections you can write now
+
+  ---
+  Section 1: Introduction
+
+  Parkinson's disease (PD) is a progressive neurodegenerative disorder characterized by the loss of
+  dopaminergic (DA) neurons in the substantia nigra. Understanding what transcriptional programs govern DA
+   neuron identity — and how genetic perturbations shift cells toward or away from that state — is
+  critical for developing therapeutic targets. However, systematically testing hundreds of gene knockdowns
+   experimentally is prohibitively expensive and slow.
+
+  AI virtual cell (AIVC) models offer a computational alternative: given single-cell RNA-seq data from
+  CRISPR perturbation screens, these models learn to predict how any given gene knockdown will reshape the
+   transcriptional landscape of a cell. In this work, we benchmark several AIVC models on two human
+  iPSC-derived neuron perturbation datasets — GSE152988 and GSE124703 — with the goal of identifying which
+   perturbations most strongly drive cells toward a DA neuron transcriptional state. This represents an
+  initial step toward a systematic gene ranking pipeline for experimental validation in PD research.
+
+  ---
+  Section 2: Literature Review
+
+  2.1 scGen (Lopez et al., 2018)
+  scGen is a variational autoencoder (VAE) that models perturbation effects via latent space arithmetic.
+  It encodes control and perturbed cells into a shared latent space, computes a perturbation "delta
+  vector" (the difference between mean latent representations of perturbed vs. control cells), and applies
+   this delta to unseen control cells to predict their perturbed state. scGen is conceptually simple and
+  fast to train, but is limited to perturbations seen during training — it cannot generalize to novel
+  knockdowns because it has no mechanism to reason about gene relationships.
+
+  2.2 GEARS (Roohani et al., 2023)
+  GEARS (Graph-Enhanced Perturbation Prediction) addresses scGen's generalization limitation by
+  incorporating a gene co-expression graph (derived from the STRING database) as an inductive bias. It
+  trains a graph neural network (GNN) where each node is a gene and edges represent co-expression
+  relationships. By reasoning over the gene network, GEARS can predict the effect of knocking down a gene
+  it has never seen perturbed during training, as long as that gene has known co-expression relationships
+  with genes that were seen. GEARS is the current standard baseline for perturbation prediction and is
+  particularly well-suited to the unseen perturbation evaluation setting.
+
+  2.3 scFoundation (Hao et al., 2024)
+  scFoundation is a large-scale foundation model pretrained on 50 million human single-cell transcriptomes
+   using a masked gene expression modeling objective over a fixed 19,264-gene vocabulary. Rather than
+  being a perturbation model itself, scFoundation acts as a feature extractor — generating rich,
+  context-aware gene embeddings (shape: cells × 19,264 × 512) that can be used as node features in
+  downstream models like GEARS. The hypothesis is that these richer embeddings encode biological priors
+  (gene function, co-regulation) that improve prediction of unseen perturbations beyond what the STRING
+  graph alone provides.
+
+  2.4 CPA (Lotfollahi et al., 2021)
+  CPA (Compositional Perturbation Autoencoder) extends the VAE framework by learning disentangled latent
+  representations for cell identity, perturbation effect, and covariate (e.g., batch). This
+  compositionality allows CPA to predict the effect of perturbation combinations not seen during training
+  by adding their individual latent vectors. CPA is particularly relevant for multi-perturbation settings.
+
+  2.5 STATE (2024)
+  STATE (Structured Attention for Transcriptional Effect prediction) introduces a transformer-based
+  architecture that attends over gene expression profiles to model perturbation effects. By incorporating
+  structured attention mechanisms, it captures long-range gene-gene interactions that GNN-based methods
+  may miss.
+
+  2.6 scGenePT (Hao et al., 2024)
+  scGenePT augments scGen with gene-level text embeddings derived from large language models (LLMs)
+  trained on biological literature. Each gene is represented not only by its expression level but also by
+  a natural language description of its function. This allows the model to leverage biological knowledge
+  encoded in text to improve generalization to unseen perturbations.
+
+  2.7 Summary Comparison
+
+  ┌────────────────────┬───────────────────┬──────────────┬────────────┬──────────────────┐
+  │       Model        │   Architecture    │ Unseen Perts │ Gene Graph │ Foundation Model │
+  ├────────────────────┼───────────────────┼──────────────┼────────────┼──────────────────┤
+  │ scGen              │ VAE               │ No           │ No         │ No               │
+  ├────────────────────┼───────────────────┼──────────────┼────────────┼──────────────────┤
+  │ GEARS              │ GNN               │ Yes          │ STRING     │ No               │
+  ├────────────────────┼───────────────────┼──────────────┼────────────┼──────────────────┤
+  │ scFoundation+GEARS │ GNN + Transformer │ Yes          │ STRING     │ Yes              │
+  ├────────────────────┼───────────────────┼──────────────┼────────────┼──────────────────┤
+  │ CPA                │ VAE               │ Partial      │ No         │ No               │
+  ├────────────────────┼───────────────────┼──────────────┼────────────┼──────────────────┤
+  │ STATE              │ Transformer       │ Yes          │ No         │ No               │
+  ├────────────────────┼───────────────────┼──────────────┼────────────┼──────────────────┤
+  │ scGenePT           │ VAE + LLM         │ Partial      │ No         │ Text embeddings  │
+  └────────────────────┴───────────────────┴──────────────┴────────────┴──────────────────┘
+
+  ---
+  Section 3: Data
+
+  We use the GSE152988 dataset (Tian & Kampmann, 2021) as our primary benchmark. This dataset contains
+  iPSC-derived neurons subjected to CRISPRi (transcriptional repression) perturbations targeting 184
+  genes, yielding 32,300 cells × 33,538 genes. Raw integer count matrices were normalized to 10,000 counts
+   per cell and log1p-transformed. We selected the top 5,000 highly variable genes (HVGs) to reduce memory
+   requirements for our GPU (NVIDIA GTX 1650 Ti, 4 GB VRAM).
+
+  The dataset contains 437 unperturbed control cells and 31,863 cells with single-gene knockdowns, with a
+  median of ~175 cells per perturbation.
+
+  ---
+  Section 4: Methods (partial — fill in GEARS results)
+
+  Train/test split. We use two evaluation protocols to assess different aspects of model performance:
+
+  - Seen perturbation evaluation (scGen): 20% of cells from 20 randomly selected perturbations are
+  withheld for testing; the model is trained on the remaining cells including 80% of those same
+  perturbations. This tests reconstruction quality.
+  - Unseen perturbation evaluation (GEARS): 46 entire perturbations are held out from training entirely
+  under the "simulation" split. The model must predict their effects without having observed any cells
+  from those conditions. This tests true generalization.
+
+  Mean expression baseline. As a sanity check, we implement a trivial baseline that predicts the global
+  mean expression of all training perturbed cells, regardless of which gene is knocked down. This baseline
+   is important context — because single-gene perturbations affect relatively few genes, overall Pearson
+  correlation is high for all methods including this baseline. The more informative metric is Pearson
+  correlation on the top-20 differentially expressed genes (DEGs).
+
+  Metrics. For each held-out perturbation we compute: (1) Pearson correlation across all 5,000 genes
+  between predicted and true mean expression; (2) Pearson correlation restricted to the top-20 most
+  differentially expressed genes (DEGs); (3) mean squared error (MSE); (4) R². All reported values are
+  averages across held-out perturbations.

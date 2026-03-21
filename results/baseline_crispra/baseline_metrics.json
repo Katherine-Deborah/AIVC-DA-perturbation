@@ -1,0 +1,7 @@
+{
+  "pearson_all_mean": 0.9956,
+  "pearson_top20_mean": 0.9169,
+  "mse_mean": 0.0018,
+  "r2_mean": 0.991,
+  "n_test_perturbations": 20
+}

@@ -1,0 +1,31 @@
+# Large data files
+*.h5ad
+*.h5
+*.mtx
+*.mtx.gz
+*.tsv.gz
+*.barcodes.tsv
+data/gears_data/
+
+# Model weights
+*.pt
+*.ckpt
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Excel/Word (optional — comment out if you want these tracked)
+# *.xlsx
+# *.docx
