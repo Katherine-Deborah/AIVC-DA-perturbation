@@ -208,17 +208,17 @@ def make_zero_shot_split(adata, dataset_name):
 # ═══════════════════════════════════════════════════════════════════════════════
 #  METRICS
 # ═══════════════════════════════════════════════════════════════════════════════
-def compute_full_metrics(test_res, adata_ctrl, gene_names, da_markers, dataset_name):
+def compute_full_metrics(test_res, ctrl_mean, gene_names, da_markers, dataset_name):
     """
     Compute all metrics. Resumes from partial results if a previous run saved them.
     Saves to Drive after each perturbation so any crash only loses the current one.
+
+    ctrl_mean: 1D np.array of shape (n_genes,) in the SAME normalized space as batch.y.
+               Must be computed from the GEARS dataloader, not from adata.X directly.
     """
     gene_idx = {g: i for i, g in enumerate(gene_names)}
     da_idx   = [gene_idx[g] for g in da_markers if g in gene_idx]
     print(f"  DA markers found in gene panel: {len(da_idx)}/{len(da_markers)}")
-
-    X_ctrl   = adata_ctrl.X.toarray() if sp.issparse(adata_ctrl.X) else np.array(adata_ctrl.X)
-    ctrl_mean = X_ctrl.mean(axis=0)
 
     # Resume from partial results if available
     done       = load_partial_results(dataset_name)
@@ -327,10 +327,15 @@ def run_gears(h5ad_path, modality_label, dataset_name):
 
     # ── Check if final results already exist (full run complete) ──────────────
     final_path = os.path.join(RESULT_DIR, dataset_name, "gears_metrics_full.json")
+    partial_path = os.path.join(RESULT_DIR, dataset_name, "per_pert_partial.json")
     if os.path.exists(final_path):
         print(f"  [ckpt] Final results already exist at {final_path} — skipping.")
         with open(final_path) as f:
             return json.load(f)
+    # Clear stale partial results so evaluation reruns with correct ctrl_mean
+    if os.path.exists(partial_path):
+        os.remove(partial_path)
+        print("  [ckpt] Cleared stale partial eval results — will recompute with fixed ctrl_mean.")
 
     adata = preprocess(h5ad_path, modality_label)
     train_conds, val_conds, test_conds = make_zero_shot_split(adata, dataset_name)
@@ -381,6 +386,19 @@ def run_gears(h5ad_path, modality_label, dataset_name):
         # best_model needs to be set for evaluate() to work
         gears_model.best_model = gears_model.model
 
+    # ── Compute ctrl_mean from GEARS' own dataloader (same normalized space as batch.y) ──
+    print("\n  Computing ctrl_mean from GEARS train_loader...")
+    ctrl_exprs = []
+    for batch in pert_data.dataloader["train_loader"]:
+        batch = batch.to(gears_model.device)
+        for i, pert_name in enumerate(batch.pert):
+            if pert_name == "ctrl":
+                ctrl_exprs.append(batch.y[i].cpu().numpy())
+    if not ctrl_exprs:
+        raise RuntimeError("No control cells found in train_loader.")
+    ctrl_mean_gears = np.stack(ctrl_exprs).mean(axis=0)
+    print(f"  ctrl_mean computed from {len(ctrl_exprs)} control cells in GEARS space.")
+
     # ── Evaluate ─────────────────────────────────────────────────────────────
     print("\n  Evaluating test set...")
     test_loader = pert_data.dataloader["test_loader"]
@@ -388,7 +406,7 @@ def run_gears(h5ad_path, modality_label, dataset_name):
 
     gene_names = list(adata.var_names)
     metrics, per_pert = compute_full_metrics(
-        test_res, adata_ctrl, gene_names, DA_MARKERS, dataset_name
+        test_res, ctrl_mean_gears, gene_names, DA_MARKERS, dataset_name
     )
     metrics.update({
         "model":    "GEARS",
