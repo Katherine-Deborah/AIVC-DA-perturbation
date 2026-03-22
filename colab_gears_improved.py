@@ -42,7 +42,6 @@ import torch
 from scipy.stats import pearsonr
 from sklearn.metrics import mean_squared_error
 from gears import PertData, GEARS
-from gears.gears import evaluate, compute_metrics
 
 warnings.filterwarnings("ignore")
 
@@ -278,6 +277,47 @@ def compute_full_metrics(test_res, adata_ctrl, gene_names, da_markers, dataset_n
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+#  CUSTOM EVALUATE — bypasses GEARS' internal evaluate() API entirely
+#  Works regardless of GEARS version or uncertainty flag behaviour
+# ═══════════════════════════════════════════════════════════════════════════════
+def custom_evaluate(test_loader, model, device):
+    """
+    Run model on test_loader and collect per-perturbation predictions and ground truth.
+    Returns: {condition_str: {"pred": np.array (n_cells, n_genes),
+                              "truth": np.array (n_cells, n_genes)}}
+    """
+    model.eval()
+    results = {}
+
+    for batch in test_loader:
+        batch = batch.to(device)
+        with torch.no_grad():
+            output = model(batch)
+            # Handle tuple output (some GEARS versions return (pred, uncertainty))
+            pred = output[0] if isinstance(output, (tuple, list)) else output
+
+        preds  = pred.cpu().numpy()   # (batch_size, n_genes)
+        truths = batch.y.cpu().numpy()  # (batch_size, n_genes)
+
+        # pert is a list of strings like ["GENE+ctrl", "GENE+ctrl", ...]
+        for i, pert in enumerate(batch.pert):
+            if pert == "ctrl":
+                continue
+            if pert not in results:
+                results[pert] = {"pred": [], "truth": []}
+            results[pert]["pred"].append(preds[i])
+            results[pert]["truth"].append(truths[i])
+
+    # Stack into arrays
+    for pert in results:
+        results[pert]["pred"]  = np.stack(results[pert]["pred"])
+        results[pert]["truth"] = np.stack(results[pert]["truth"])
+
+    print(f"  Evaluated {len(results)} test perturbations.")
+    return results
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 #  MAIN TRAINING + EVAL LOOP
 # ═══════════════════════════════════════════════════════════════════════════════
 def run_gears(h5ad_path, modality_label, dataset_name):
@@ -344,9 +384,7 @@ def run_gears(h5ad_path, modality_label, dataset_name):
     # ── Evaluate ─────────────────────────────────────────────────────────────
     print("\n  Evaluating test set...")
     test_loader = pert_data.dataloader["test_loader"]
-    # uncertainty=False: newer GEARS versions changed the signature from
-    # evaluate(loader, model, pert_list, device) to evaluate(loader, model, uncertainty, device)
-    test_res    = evaluate(test_loader, gears_model.best_model, False, gears_model.device)
+    test_res    = custom_evaluate(test_loader, gears_model.best_model, gears_model.device)
 
     gene_names = list(adata.var_names)
     metrics, per_pert = compute_full_metrics(
