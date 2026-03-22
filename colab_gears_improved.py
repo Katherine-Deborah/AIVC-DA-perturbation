@@ -46,6 +46,10 @@ from gears.gears import evaluate, compute_metrics
 
 warnings.filterwarnings("ignore")
 
+# Compatibility fix: pandas >= 2.0 removed Series.nonzero() which GEARS still calls internally
+if not hasattr(pd.Series, 'nonzero'):
+    pd.Series.nonzero = lambda self: self.to_numpy().nonzero()
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  CONFIG — update DRIVE_BASE to your Google Drive folder
 # ═══════════════════════════════════════════════════════════════════════════════
