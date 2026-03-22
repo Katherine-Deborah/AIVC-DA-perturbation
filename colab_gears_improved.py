@@ -344,8 +344,9 @@ def run_gears(h5ad_path, modality_label, dataset_name):
     # ── Evaluate ─────────────────────────────────────────────────────────────
     print("\n  Evaluating test set...")
     test_loader = pert_data.dataloader["test_loader"]
-    test_res    = evaluate(test_loader, gears_model.best_model,
-                           gears_model.pert_list, gears_model.device)
+    # uncertainty=False: newer GEARS versions changed the signature from
+    # evaluate(loader, model, pert_list, device) to evaluate(loader, model, uncertainty, device)
+    test_res    = evaluate(test_loader, gears_model.best_model, False, gears_model.device)
 
     gene_names = list(adata.var_names)
     metrics, per_pert = compute_full_metrics(
