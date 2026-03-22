@@ -291,9 +291,12 @@ split, and (2) scGen vs. baseline on the same seen-pert split.
 | Mean Baseline | 0.769 | 0.518 | 0.953 | 0.653 | 20 | Seen (condition held-out) |
 | scGen | 0.442 | 0.168 | 0.738 | 0.478 | 20 | Seen (80/20 cell split) |
 | GEARS (5 ep, 5k HVG) | **0.262** | — | 0.663 | — | 46 | **Unseen (simulation split)** |
-| GEARS (20 ep, Colab) | *pending* | *pending* | *pending* | *pending* | ~18 | **Unseen (zero_shot_pert)** |
+| GEARS (20 ep, Colab) | 0.129 | *pending* | 0.623 | *pending* | 37 | **Unseen (simulation split)** |
 
-*DA marker columns for GEARS pending Colab run results (18 DA markers found in 5k HVG panel).*
+*DA marker delta columns for GEARS (20 ep) pending one rerun to fix an evaluation bug
+(ctrl_mean scale mismatch between preprocessing space and GEARS' internal data space).
+58/71 DA markers found in the full 33k gene panel. Pearson delta and sign accuracy above
+are from GEARS' own internal test evaluation, which computes these correctly.*
 
 **Table 3. CRISPRi — secondary absolute metrics (for cross-paper comparison).**
 
@@ -302,7 +305,7 @@ split, and (2) scGen vs. baseline on the same seen-pert split.
 | Mean Baseline | 0.9988 | 0.9917 | 0.9998 | 0.0005 | Seen (20) |
 | scGen | 0.9938 | 0.9523 | 0.9988 | 0.0025 | Seen (20) |
 | GEARS (5 ep) | 0.9965 | 0.9733 | — | 0.00137 | **Unseen (46)** |
-| GEARS (20 ep) | *pending* | *pending* | *pending* | *pending* | **Unseen (~18)** |
+| GEARS (20 ep, Colab) | 0.9963 | **0.9776** | 0.9984 | 0.0007 | **Unseen (37)** |
 
 **Key observations:**
 
@@ -347,7 +350,7 @@ co-expression graph provides genuine perturbation-direction signal.
 | Mean Baseline | 0.591 | 0.628 | 0.920 | 0.493 | 20 | Seen (condition held-out) |
 | scGen | 0.591 | 0.283 | 0.833 | 0.407 | 20 | Seen (80/20 cell split) |
 | GEARS (5 ep) | **0.334** | — | 0.714 | — | 25 | **Unseen (simulation split)** |
-| GEARS (20 ep, Colab) | *pending* | *pending* | *pending* | *pending* | ~10 | **Unseen (zero_shot_pert)** |
+| GEARS (20 ep, Colab) | *pending* | *pending* | *pending* | *pending* | ~10 | **Unseen (running)** |
 
 **Table 5. CRISPRa — secondary absolute metrics.**
 
@@ -371,8 +374,12 @@ directionally even if the absolute MSE is higher.
 
 GEARS on local hardware (GTX 1650 Ti, 4 GB VRAM) trained for 5 epochs (~25 minutes) with
 validation top-20 DEG MSE improving from 0.0044 (epoch 1) to 0.0041 (epochs 4–5), indicating
-the model had not converged. scGen converged within ~11 epochs (early stopping, patience=10)
-with final ELBO ~900–1200.
+the model had not converged. The 20-epoch Colab run confirms convergence: validation DE MSE
+dropped from 0.0062 (epoch 1) to 0.0057 (epoch 9), then plateaued at ~0.0057–0.0058 through
+epoch 20, with the best model selected at epoch 9. Final test DE MSE was 0.0063, achieving
+Pearson DE of **0.9776** — an improvement over the 5-epoch local run (0.973).
+
+scGen converged within ~11 epochs (early stopping, patience=10) with final ELBO ~900–1200.
 
 ### 5.5 GEARS — 20-Epoch Full-Gene Results (Yumejichi Fujita)
 
