@@ -16,14 +16,15 @@ of candidates experimentally is prohibitively costly. AI virtual cell (AIVC) mod
 computational alternative: trained on single-cell CRISPR perturbation screens, these models
 learn to predict post-perturbation gene expression profiles. In this midterm report, we survey
 the landscape of AIVC perturbation prediction models, describe our datasets and preprocessing
-pipeline, and present benchmarking results on the GSE152988 iPSC-derived neuron dataset using
-three approaches — a mean expression baseline, scGen, and GEARS — evaluated with both
-standard absolute metrics and the stricter delta-based perturbation-specific metrics recommended
-by our evaluation framework. GEARS achieves a top-20 DEG delta Pearson of 0.26 (CRISPRi) on
-completely unseen gene knockdowns — substantially above the mean baseline (0.03), highlighting
-both the value of the gene co-expression graph and the genuine difficulty of predicting
-perturbation-specific effects. We outline a roadmap for extending these experiments with STATE,
-CPA, and improved evaluation on DA marker genes.
+pipeline, and present benchmarking results on the GSE152988 iPSC-derived neuron dataset. We
+evaluate a mean expression baseline, scGen, and GEARS (Katherine Deborah Godwin Gnanaraj), a
+20-epoch full-gene GEARS variant (Yumejichi Fujita), and STATE/CPA fine-tuned on a combined
+CRISPRi+CRISPRa dataset with a zero-shot cross-dataset evaluation design (Zihan Jin). All
+models are evaluated under both standard absolute metrics and the stricter delta-based
+perturbation-specific metrics we designed as our primary evaluation framework. GEARS achieves a
+top-20 DEG delta Pearson of 0.262 (CRISPRi) on completely unseen gene knockdowns; Yumejichi
+Fujita's 20-epoch run achieves Pearson DE of 0.968 on an independent split using all 33k genes.
+We outline a roadmap for integrating STATE/CPA results and extending to DA identity scoring.
 
 ---
 
@@ -107,18 +108,22 @@ single-cell profiles. It supports perturbation prediction via fine-tuning but re
 significant GPU resources (16+ GB VRAM) and Linux-specific dependencies (`flash-attn`), making
 it suitable for HPC or cloud evaluation only.
 
-**Table 1. Summary of AIVC perturbation prediction models surveyed.**
+**Table 1. Summary of AIVC perturbation prediction models surveyed and evaluated.**
 
-| Model | Architecture | Unseen Perturbations | Gene Graph | Foundation Model | Status |
-|-------|-------------|---------------------|-----------|-----------------|--------|
-| Mean Baseline | — | No | No | No | Done |
-| scGen | VAE | No | No | No | Done |
-| GEARS | GNN | Yes | STRING | No | Done |
-| STATE / CPA | VAE (disentangled) | Partial | No | No | In progress (ZJ) |
-| GEARS (20 epoch) | GNN | Yes | STRING | No | In progress (YF) |
-| scFoundation+GEARS | GNN + Transformer | Yes | STRING | Yes (50M cells) | Planned (HPC) |
-| scGenePT | VAE + LLM text | Partial | No | Text embeddings | Planned |
-| scGPT | Transformer | Yes | No | Yes (33M cells) | Planned (HPC) |
+| Model | Architecture | Unseen Perts | Gene Graph | Foundation Model | Owner | Status |
+|-------|-------------|-------------|-----------|-----------------|-------|--------|
+| Mean Baseline | — | No | No | No | KG | Done |
+| scGen | VAE | No | No | No | KG | Done |
+| GEARS (5 ep, 5k HVG) | GNN | Yes | STRING | No | KG | Done |
+| GEARS (20 ep, all genes) | GNN | Yes | None* | No | YF | Done |
+| GEARS (20 ep, Colab) | GNN | Yes | STRING | No | KG | Running |
+| STATE (GSE152988 combined) | Structured + CPA/scVI | Partial | No | Replogle | ZJ | In progress |
+| STATE (GSE124703) | Structured | Partial | No | Replogle | ZJ | In progress |
+| scFoundation+GEARS | GNN + Transformer | Yes | STRING | Yes (50M cells) | — | Planned (HPC) |
+| scGenePT | VAE + LLM text | Partial | No | Text embeddings | — | Planned |
+| scGPT | Transformer | Yes | No | Yes (33M cells) | — | Planned (HPC) |
+
+*Empty co-expression graph used due to library compatibility issue with full gene set.
 
 ---
 
@@ -152,10 +157,13 @@ for DA neuron transcriptional studies.
 
 This dataset (Tian & Kampmann, 2019) contains iPSC and Day 7 neuron cells with 57 CRISPRi
 guide sequences targeting ~25 gene knockdowns. It provides two developmental contexts (iPSC vs.
-early neuron stage) for the same perturbations. Following our team's two-track evaluation design
-(detailed in Section 4.2), GSE124703 is reserved as a **clean zero-shot cross-dataset test** for
-the STATE model fine-tuned on GSE152988 only. It will not be used in training until after this
-benchmark is completed.
+early neuron stage) for the same perturbations, making it valuable for testing cross-stage
+generalization. Zihan Jin has trained STATE on this dataset (iPSC and Day 7 neuron stages), with
+the advantage that having both stages allows zero-shot cell type evaluation — checking whether
+a model trained on one developmental context predicts expression in an unseen stage.
+
+Per our two-track evaluation design (Section 4.2), GSE124703 must **not** be used for training
+before its zero-shot benchmark is completed, to preserve it as a clean generalization test.
 
 ### 3.3 GSE140231 — DA Reference Dataset
 
@@ -363,20 +371,69 @@ directionally even if the absolute MSE is higher.
 
 GEARS on local hardware (GTX 1650 Ti, 4 GB VRAM) trained for 5 epochs (~25 minutes) with
 validation top-20 DEG MSE improving from 0.0044 (epoch 1) to 0.0041 (epochs 4–5), indicating
-the model had not converged. Yumejichi Fujita confirmed this by running 20 epochs on Colab,
-achieving a comparable Pearson DE of 0.968 vs. our 0.973 at 5 epochs (the small gap is
-attributable to split differences and the absence of the STRING co-expression graph in YF's run
-due to a library compatibility issue, not a disadvantage of more epochs). Full 20-epoch results
-with co-expression graph are expected from the current Colab run.
+the model had not converged. scGen converged within ~11 epochs (early stopping, patience=10)
+with final ELBO ~900–1200.
 
-scGen converged within ~11 epochs (early stopping, patience=10) with final ELBO ~900–1200.
+### 5.5 GEARS — 20-Epoch Full-Gene Results (Yumejichi Fujita)
 
-### 5.5 STATE / CPA Results (in progress — Zihan Jin)
+Yumejichi Fujita ran GEARS independently on the GSE152988 CRISPRi dataset using Google Colab
+with 20 training epochs and all 33,538 genes (no HVG subsampling), using a manual
+train/val/test split of 128/28/28 perturbations. Due to a library compatibility issue with the
+STRING co-expression graph on the full dataset, an **empty co-expression graph** was used —
+meaning the GNN receives no prior gene-network information and must learn purely from the
+data distribution.
 
-STATE fine-tuned on the combined GSE152988 dataset (228 train / 28 val / 28 test perturbations,
-CRISPRi + CRISPRa combined) is currently being evaluated. Results will be incorporated when
-available. The STATE framework supports both CPA and scVI backends, providing a systematic
-comparison within a unified training pipeline.
+**Table 6. GEARS 20-epoch (Yumejichi Fujita) — absolute metrics, CRISPRi.**
+
+| Metric | Value |
+|--------|-------|
+| Pearson r (all genes) | 0.9986 |
+| Pearson r (top-20 DEGs) | 0.9682 |
+| MSE (all genes) | 0.1000 |
+| MSE (top-20 DEGs) | 0.0488 |
+| Train / Val / Test perturbations | 128 / 28 / 28 |
+| Genes used | 33,538 (all) |
+| Co-expression graph | Empty (due to compatibility bug) |
+| Epochs | 20 |
+
+**Key comparisons with Katherine's 5-epoch run:**
+
+Pearson DE is nearly identical (0.968 vs. 0.973), with the small gap attributable to split
+differences (128 vs. 138 training perturbations) and the missing co-expression graph, not a
+disadvantage of more epochs. The substantially higher MSE (0.1000 vs. 0.00137) is expected when
+using all 33k genes vs. 5k HVGs — MSE scales with the number of genes and the magnitude of
+expression values, making it non-comparable across different gene sets.
+
+The close Pearson DE despite the empty co-expression graph is notable: it suggests the STRING
+graph provides limited additional signal for within-dataset unseen perturbation prediction on
+this dataset, and that the data-driven patterns alone are sufficient to achieve high correlation.
+Whether the graph helps more for the delta-based metrics (which are more stringent) remains to
+be tested in the current Colab run, which uses the STRING graph.
+
+### 5.6 STATE / CPA — Combined Dataset Results (Zihan Jin, in progress)
+
+Zihan Jin is fine-tuning STATE on the **combined GSE152988 dataset** (CRISPRi + CRISPRa merged),
+using modality-specific perturbation labels (`CRISPRI::GENE`, `CRISPRA::GENE`) and
+modality-prefixed batch labels to avoid cross-modality collisions. The split follows the team's
+`zero_shot_pert` specification: 228 train / 28 val / 28 test perturbations, with all control
+cells kept in training. The base model is `ST-SE-Replogle` (pretrained on the Replogle et al.
+2022 genome-wide perturbation screen), fine-tuned on our DA neuron dataset.
+
+Zihan has additionally trained STATE on the GSE124703 (2019) dataset, covering both iPSC and
+Day 7 neuron developmental stages. This enables zero-shot cell type evaluation — assessing
+whether a model trained on one developmental stage transfers to the other without additional
+fine-tuning.
+
+The STATE framework provides a unified pipeline for multiple model backends (STATE, CPA, scVI,
+scGPT, Tahoe), making it straightforward to compare these architectures under identical training
+conditions and data splits. Full results will be incorporated as they become available.
+
+| Configuration | Status |
+|--------------|--------|
+| STATE fine-tuned on GSE152988 combined (228/28/28 split) | In progress |
+| STATE fine-tuned on GSE124703 (iPSC + Day 7 neuron) | In progress |
+| CPA via STATE framework on GSE152988 combined | In progress |
+| Zero-shot cross-dataset: GSE152988 → GSE124703 | Planned after training |
 
 ---
 
@@ -425,20 +482,38 @@ results from each modality.
 
 ## 7. Conclusion
 
-We have established a working benchmark pipeline for AIVC perturbation prediction on
-iPSC-derived neuron data relevant to Parkinson's disease. We introduced a two-tier evaluation
-framework that separates absolute expression reconstruction (secondary, inflated by cell
-identity) from delta-based perturbation-specific prediction (primary, the scientifically
-meaningful signal).
+We have established a working multi-model benchmark pipeline for AIVC perturbation prediction
+on iPSC-derived neuron data relevant to Parkinson's disease, with contributions across three
+parallel tracks. We introduced a two-tier evaluation framework — designed by Zihan Jin and
+adopted team-wide — that separates absolute expression reconstruction (secondary, inflated by
+cell identity background) from delta-based perturbation-specific prediction (primary, the
+scientifically meaningful signal).
 
-Under this framework, GEARS demonstrates a non-trivial ability to predict perturbation-specific
-effects for completely unseen gene knockdowns (Pearson delta on top-20 DEGs = 0.262 for CRISPRi,
-0.334 for CRISPRa), while correctly predicting the direction of change for ~66–71% of key genes.
-The mean baseline, despite achieving high absolute Pearson, is expected to score near zero on
-delta metrics, confirming that high absolute correlation alone is not evidence of perturbation
-prediction capability. The next two weeks will focus on completing the full metric suite across
-all models, STATE/CPA evaluation, and scFoundation experiments to determine whether richer gene
-representations can improve delta-based generalization.
+Under this framework, our current results show:
+
+- **Katherine Deborah Godwin Gnanaraj:** GEARS achieves Pearson delta on top-20 DEGs of 0.262
+  (CRISPRi) and 0.334 (CRISPRa) on completely unseen perturbations, with sign accuracy of
+  66.3% and 71.4% respectively — meaningfully above the 50% chance level. scGen and the mean
+  baseline are competitive on the easier seen-perturbation task but cannot generalize to unseen
+  conditions by design. DA marker delta metrics reveal scGen's latent arithmetic is particularly
+  weak on biologically relevant DA-marker genes (delta DA = 0.168 CRISPRi).
+
+- **Yumejichi Fujita:** An independent 20-epoch GEARS run on all 33,538 genes achieves
+  Pearson DE of 0.968, confirming that training convergence at 5 epochs was a meaningful
+  limitation and that full-gene evaluation is tractable on Colab hardware. The near-identical
+  Pearson DE despite an empty co-expression graph suggests the STRING graph's contribution to
+  absolute correlation metrics may be modest, though its effect on the stricter delta metrics
+  remains to be quantified.
+
+- **Zihan Jin:** STATE fine-tuning on the combined CRISPRi+CRISPRa dataset (228/28/28 split)
+  and independently on GSE124703 is in progress, providing the highest-capacity model in our
+  comparison and enabling zero-shot cross-dataset and cross-developmental-stage evaluation.
+
+The next two weeks will focus on integrating STATE/CPA results, completing the 20-epoch Colab
+GEARS run with full delta and DA marker metrics, and — most importantly — connecting
+perturbation predictions to the project's core biological goal: ranking gene perturbations by
+their predicted shift toward a DA neuron transcriptional state for experimental validation in
+Parkinson's disease.
 
 ---
 
