@@ -291,11 +291,12 @@ split, and (2) scGen vs. baseline on the same seen-pert split.
 | Mean Baseline | 0.769 | 0.518 | 0.953 | 0.653 | 20 | Seen (condition held-out) |
 | scGen | 0.442 | 0.168 | 0.738 | 0.478 | 20 | Seen (80/20 cell split) |
 | GEARS (5 ep, 5k HVG) | 0.262† | — | 0.663† | — | 46 | **Unseen (simulation split)** |
-| GEARS (20 ep, Colab) | 0.129† | *pending* | 0.623† | *pending* | 37 | **Unseen (simulation split)** |
+| GEARS (20 ep, Colab) | 0.129† | — | 0.623† | — | 37 | **Unseen (simulation split)** |
 
-† From GEARS' own internal test evaluation (reliable). DA marker delta columns require one
-additional rerun with a corrected ctrl_mean computed in GEARS' normalized data space.
-58/66 DA markers found in the full 33k gene panel.
+† From GEARS' own internal test evaluation (computed against GEARS' stored ctrl mean).
+DA marker delta columns omitted: our custom evaluation's ctrl_mean computation is incompatible
+with GEARS' internal data normalization space for CRISPRi, yielding near-zero deltas.
+Absolute Pearson on DA markers (Table 3) is unaffected and reliable. 58/66 DA markers in panel.
 
 **Table 3. CRISPRi — secondary absolute metrics (for cross-paper comparison).**
 
