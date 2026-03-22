@@ -6,26 +6,39 @@ Trains GEARS on GSE152988 CRISPRi and CRISPRa with:
   - 20 epochs (vs 5 locally)
   - zero_shot_pert-style manual split (10% val / 10% test, matching team data_split.md)
   - Full metrics: Pearson all / top-20 DEG / DA markers (absolute + delta + sign accuracy)
+  - CHECKPOINTING: survives Colab disconnects — resumes from last saved state automatically
 
-SETUP on Colab:
-  1. Upload to Colab or mount Drive.
-  2. Upload these files to Colab (or put in Drive and update paths):
-       - GSE152988/TianKampmann2021_CRISPRi.h5ad
-       - GSE152988/TianKampmann2021_CRISPRa.h5ad
-  3. Run all cells top-to-bottom.
-  4. Download results/gears_colab/ folder when done.
+═══════════════════════════════════════════════════════════════
+SETUP (run these cells in order in Colab)
+═══════════════════════════════════════════════════════════════
 
-# ── Cell 1: Install ──────────────────────────────────────────────────────────
+# ── Cell 1: Mount Google Drive (REQUIRED for checkpoints to persist) ──────────
+from google.colab import drive
+drive.mount('/content/drive')
+
+# ── Cell 2: Install dependencies ──────────────────────────────────────────────
 !pip install -q cell-gears scanpy anndata scipy scikit-learn
+
+# ── Cell 3: Upload data files to Drive, then set paths below ─────────────────
+# Put these two files anywhere in your Drive, e.g.:
+#   My Drive/566/GSE152988/TianKampmann2021_CRISPRi.h5ad
+#   My Drive/566/GSE152988/TianKampmann2021_CRISPRa.h5ad
+# Then update DRIVE_BASE below to match.
+
+# ── Cell 4: Run this script ───────────────────────────────────────────────────
+# exec(open('colab_gears_improved.py').read())   # if uploaded as a file
+# OR paste everything below into a cell and run it.
+═══════════════════════════════════════════════════════════════
 """
 
-# ── Cell 2: Imports ───────────────────────────────────────────────────────────
+# ── Imports ───────────────────────────────────────────────────────────────────
 import numpy as np
 import pandas as pd
-import json, os, warnings
+import json, os, shutil, warnings
 import anndata as ad
 import scanpy as sc
 import scipy.sparse as sp
+import torch
 from scipy.stats import pearsonr
 from sklearn.metrics import mean_squared_error
 from gears import PertData, GEARS
@@ -33,262 +46,322 @@ from gears.gears import evaluate, compute_metrics
 
 warnings.filterwarnings("ignore")
 
-# ── Cell 3: Config ────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+#  CONFIG — update DRIVE_BASE to your Google Drive folder
+# ═══════════════════════════════════════════════════════════════════════════════
+DRIVE_BASE = "/content/drive/MyDrive/566"   # <-- change this if your Drive path differs
+
+CRISPR_I_PATH = f"{DRIVE_BASE}/GSE152988/TianKampmann2021_CRISPRi.h5ad"
+CRISPR_A_PATH = f"{DRIVE_BASE}/GSE152988/TianKampmann2021_CRISPRa.h5ad"
+
+# All checkpoints and results go to Drive so they survive disconnects
+CHECKPOINT_DIR = f"{DRIVE_BASE}/gears_checkpoints"   # model weights + split info
+RESULT_DIR     = f"{DRIVE_BASE}/results/gears_colab" # final + incremental results
+DATA_DIR       = "/content/gears_data"               # GEARS graph cache (local, fast I/O)
+
 EPOCHS      = 20
 BATCH_SIZE  = 32
-DEVICE      = "cuda"     # Colab GPU
+DEVICE      = "cuda"
 VAL_FRAC    = 0.10
 TEST_FRAC   = 0.10
-MIN_CELLS   = 30         # min cells per perturbation to be eligible
+MIN_CELLS   = 30
 SEED        = 42
 
-# Paths — update if using Drive
-CRISPR_I_PATH = "GSE152988/TianKampmann2021_CRISPRi.h5ad"
-CRISPR_A_PATH = "GSE152988/TianKampmann2021_CRISPRa.h5ad"
-DATA_DIR      = "data/gears_data_colab"
-RESULT_DIR    = "results/gears_colab"
-
-os.makedirs(DATA_DIR, exist_ok=True)
+os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 os.makedirs(RESULT_DIR, exist_ok=True)
+os.makedirs(DATA_DIR, exist_ok=True)
 
-# DA marker gene list (71 canonical markers; from DA_gene_dataset.csv / CLAUDE.md)
+# DA marker genes (from project CLAUDE.md)
 DA_MARKERS = [
-    # Biosynthesis
     "TH", "DDC", "GCH1", "PTS", "SPR", "QDPR",
-    # Transporters
     "SLC6A3", "SLC18A2", "SLC18A1",
-    # Catabolism
     "MAOA", "MAOB", "COMT", "ALDH2", "ALDH1A1",
-    # Transcription factors (DA identity)
     "NR4A2", "LMX1A", "LMX1B", "FOXA2", "PITX3", "EN1", "EN2", "ASCL1",
-    # Receptors
     "DRD1", "DRD2", "DRD3", "DRD4", "DRD5",
-    # PD risk genes
     "SNCA", "LRRK2", "GBA1", "PARK2", "PINK1", "PARK7", "UCHL1",
-    # Mitochondrial
     "NDUFS1", "NDUFV1", "COX4I1", "ATP5A1", "SOD2",
-    # Additional canonical DA markers
-    "SLC17A6", "GAD1", "GAD2", "CHAT", "DBH", "PNMT",
-    "KCNJ6", "GIRK2", "CALB1", "CALB2", "CALBINDIN",
-    "RET", "GDNF", "BDNF", "NRTN", "ARTN",
-    "NURR1", "OTX2", "NEUROG2", "NEUROD1",
-    "VTH1", "SLC6A4", "TPH1", "TPH2",
-    "ALDH1A7", "GFRA1", "GFRA2",
 ]
-# Remove duplicates (NURR1 = NR4A2 symbol alias; keep both for coverage)
-DA_MARKERS = list(dict.fromkeys(DA_MARKERS))
 
 
-# ── Cell 4: Preprocessing helper ─────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+#  CHECKPOINT HELPERS
+# ═══════════════════════════════════════════════════════════════════════════════
+def ckpt_path(dataset_name, fname):
+    d = os.path.join(CHECKPOINT_DIR, dataset_name)
+    os.makedirs(d, exist_ok=True)
+    return os.path.join(d, fname)
+
+def save_model(gears_model, dataset_name):
+    """Save model weights + pert_list to Drive checkpoint."""
+    path = ckpt_path(dataset_name, "best_model.pt")
+    torch.save({
+        "model_state": gears_model.best_model.state_dict(),
+        "pert_list":   gears_model.pert_list,
+    }, path)
+    print(f"  [ckpt] Model saved -> {path}")
+
+def load_model_if_exists(gears_model, dataset_name):
+    """Load model weights from Drive if checkpoint exists. Returns True if loaded."""
+    path = ckpt_path(dataset_name, "best_model.pt")
+    if not os.path.exists(path):
+        return False
+    ckpt = torch.load(path, map_location=gears_model.device)
+    gears_model.best_model.load_state_dict(ckpt["model_state"])
+    gears_model.best_model.eval()
+    print(f"  [ckpt] Loaded model from {path} — skipping training.")
+    return True
+
+def save_split(train_conds, val_conds, test_conds, dataset_name):
+    """Persist the condition split so restarts use identical splits."""
+    data = {
+        "train": sorted(train_conds),
+        "val":   sorted(val_conds),
+        "test":  sorted(test_conds),
+    }
+    with open(ckpt_path(dataset_name, "split.json"), "w") as f:
+        json.dump(data, f, indent=2)
+
+def load_split_if_exists(dataset_name):
+    """Load split from Drive if it was already computed. Returns (train, val, test) or None."""
+    path = ckpt_path(dataset_name, "split.json")
+    if not os.path.exists(path):
+        return None
+    with open(path) as f:
+        data = json.load(f)
+    print(f"  [ckpt] Loaded split from {path}")
+    return set(data["train"]), set(data["val"]), set(data["test"])
+
+def load_partial_results(dataset_name):
+    """Load per-perturbation results already evaluated in a previous run."""
+    path = os.path.join(RESULT_DIR, dataset_name, "per_pert_partial.json")
+    if not os.path.exists(path):
+        return {}
+    with open(path) as f:
+        records = json.load(f)
+    done = {r["condition"]: r for r in records}
+    print(f"  [ckpt] Resuming: {len(done)} perturbations already evaluated.")
+    return done
+
+def save_partial_results(per_pert_list, dataset_name):
+    """Append-safe incremental save of per-perturbation results to Drive."""
+    out_dir = os.path.join(RESULT_DIR, dataset_name)
+    os.makedirs(out_dir, exist_ok=True)
+    with open(os.path.join(out_dir, "per_pert_partial.json"), "w") as f:
+        json.dump(per_pert_list, f, indent=2)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  PREPROCESSING
+# ═══════════════════════════════════════════════════════════════════════════════
 def preprocess(h5ad_path, modality_label):
-    """Load, normalize, and format a GSE152988 h5ad file for GEARS."""
-    print(f"\nLoading {modality_label}...")
+    print(f"\nLoading {modality_label} from {h5ad_path}...")
     adata = ad.read_h5ad(h5ad_path)
-    print(f"  Raw: {adata.n_obs:,} cells × {adata.n_vars:,} genes")
-
+    print(f"  Raw: {adata.n_obs:,} cells x {adata.n_vars:,} genes")
     adata.layers["counts"] = adata.X.copy()
     sc.pp.normalize_total(adata, target_sum=1e4)
     sc.pp.log1p(adata)
-
-    # Map condition label to GEARS format: GENE+ctrl or ctrl
     if "perturbation" in adata.obs.columns:
         adata.obs["condition"] = adata.obs["perturbation"].apply(
             lambda g: "ctrl" if g in ("control", "ctrl") else f"{g}+ctrl"
         )
-    # fallback: condition column already present
     if "condition" not in adata.obs.columns:
-        raise ValueError(f"No 'condition' or 'perturbation' column in {h5ad_path}")
-
+        raise ValueError(f"No 'condition' or 'perturbation' column found in {h5ad_path}")
     adata.var["gene_name"] = adata.var_names.tolist()
     adata.obs["cell_type"] = "iPSC-induced-neuron"
-    print(f"  Conditions: {adata.obs['condition'].nunique()} unique")
-    print(f"  Control cells: {(adata.obs['condition']=='ctrl').sum():,}")
+    print(f"  Conditions: {adata.obs['condition'].nunique()} unique  |  "
+          f"Control cells: {(adata.obs['condition']=='ctrl').sum():,}")
     return adata
 
 
-# ── Cell 5: Manual zero_shot_pert split ───────────────────────────────────────
-def make_zero_shot_split(adata, val_frac=VAL_FRAC, test_frac=TEST_FRAC,
-                          min_cells=MIN_CELLS, seed=SEED):
-    """
-    Holds out val_frac and test_frac of perturbation conditions entirely
-    (no cells from these conditions appear in training).
-    Controls always stay in training.
-    Matches the zero_shot_pert split in data_split.md.
-    """
-    np.random.seed(seed)
-    counts  = adata.obs["condition"].value_counts()
-    eligible = [c for c in counts.index if c != "ctrl" and counts[c] >= min_cells]
+# ═══════════════════════════════════════════════════════════════════════════════
+#  SPLIT
+# ═══════════════════════════════════════════════════════════════════════════════
+def make_zero_shot_split(adata, dataset_name):
+    """zero_shot_pert split — deterministic. Loads from checkpoint if already saved."""
+    existing = load_split_if_exists(dataset_name)
+    if existing:
+        return existing
+
+    np.random.seed(SEED)
+    counts   = adata.obs["condition"].value_counts()
+    eligible = [c for c in counts.index if c != "ctrl" and counts[c] >= MIN_CELLS]
     np.random.shuffle(eligible)
 
     n       = len(eligible)
-    n_val   = max(1, int(n * val_frac))
-    n_test  = max(1, int(n * test_frac))
+    n_val   = max(1, int(n * VAL_FRAC))
+    n_test  = max(1, int(n * TEST_FRAC))
     n_train = n - n_val - n_test
 
     train_conds = set(eligible[:n_train]) | {"ctrl"}
     val_conds   = set(eligible[n_train:n_train + n_val])
     test_conds  = set(eligible[n_train + n_val:])
 
-    print(f"  Split: {len(train_conds)-1} train / {len(val_conds)} val / {len(test_conds)} test perturbations")
+    save_split(train_conds, val_conds, test_conds, dataset_name)
+    print(f"  Split: {len(train_conds)-1} train / {len(val_conds)} val / "
+          f"{len(test_conds)} test perturbations")
     return train_conds, val_conds, test_conds
 
 
-# ── Cell 6: Full metrics computation ─────────────────────────────────────────
-def compute_full_metrics(test_res, adata_ctrl, gene_names, da_markers):
+# ═══════════════════════════════════════════════════════════════════════════════
+#  METRICS
+# ═══════════════════════════════════════════════════════════════════════════════
+def compute_full_metrics(test_res, adata_ctrl, gene_names, da_markers, dataset_name):
     """
-    Compute comprehensive evaluation metrics from GEARS test_res dict.
-
-    test_res: {condition: {"pred": np.array, "truth": np.array}}
-              where arrays are (n_cells, n_genes)
-    adata_ctrl: AnnData of control cells used to compute ctrl_mean
-    gene_names: list of gene names (len = n_genes)
-    da_markers: list of DA marker gene names
-
-    Returns: dict of all metrics, per-pert list of dicts
+    Compute all metrics. Resumes from partial results if a previous run saved them.
+    Saves to Drive after each perturbation so any crash only loses the current one.
     """
     gene_idx = {g: i for i, g in enumerate(gene_names)}
-
-    # Control mean expression
-    X_ctrl = adata_ctrl.X.toarray() if sp.issparse(adata_ctrl.X) else np.array(adata_ctrl.X)
-    ctrl_mean = X_ctrl.mean(axis=0)
-
-    # DA marker indices (restrict to genes present in data)
-    da_idx = [gene_idx[g] for g in da_markers if g in gene_idx]
+    da_idx   = [gene_idx[g] for g in da_markers if g in gene_idx]
     print(f"  DA markers found in gene panel: {len(da_idx)}/{len(da_markers)}")
 
-    pearson_all_list, pearson_de_list = [], []
-    pearson_da_list   = []
-    pearson_delta_all_list, pearson_delta_de_list, pearson_delta_da_list = [], [], []
-    sign_acc_de_list,  sign_acc_da_list  = [], []
-    mse_list, mse_delta_de_list, mse_delta_da_list = [], [], []
-    per_pert = []
+    X_ctrl   = adata_ctrl.X.toarray() if sp.issparse(adata_ctrl.X) else np.array(adata_ctrl.X)
+    ctrl_mean = X_ctrl.mean(axis=0)
 
-    for cond, res in test_res.items():
-        pred  = np.array(res["pred"])   # (n_cells, n_genes)
-        truth = np.array(res["truth"])  # (n_cells, n_genes)
+    # Resume from partial results if available
+    done       = load_partial_results(dataset_name)
+    per_pert   = list(done.values())   # already-evaluated records
+
+    todo = {k: v for k, v in test_res.items() if k not in done}
+    print(f"  Evaluating {len(todo)} perturbations "
+          f"({len(done)} already done from previous run)...")
+
+    for cond, res in todo.items():
+        pred  = np.array(res["pred"])
+        truth = np.array(res["truth"])
 
         pred_mean  = pred.mean(axis=0)
         truth_mean = truth.mean(axis=0)
-
         true_delta = truth_mean - ctrl_mean
         pred_delta = pred_mean  - ctrl_mean
+        de_idx     = np.argsort(np.abs(true_delta))[-20:]
 
-        # Top-20 DEGs: largest absolute deviation from ctrl in truth
-        de_idx = np.argsort(np.abs(true_delta))[-20:]
+        def safe_r(a, b):
+            if len(a) < 2: return None
+            r, _ = pearsonr(a, b)
+            return round(float(r), 4)
 
-        # ── Absolute metrics ──────────────────────────────────────────────────
-        r_all, _  = pearsonr(pred_mean, truth_mean)
-        r_de,  _  = pearsonr(pred_mean[de_idx],  truth_mean[de_idx])
-        r_da,  _  = pearsonr(pred_mean[da_idx],  truth_mean[da_idx]) if len(da_idx) > 1 else (np.nan, None)
+        record = {
+            "condition":             cond,
+            "pearson_delta_de":      safe_r(pred_delta[de_idx], true_delta[de_idx]),
+            "pearson_delta_da":      safe_r(pred_delta[da_idx], true_delta[da_idx]) if da_idx else None,
+            "sign_accuracy_de":      round(float(np.mean(np.sign(pred_delta[de_idx]) == np.sign(true_delta[de_idx]))), 4),
+            "sign_accuracy_da":      round(float(np.mean(np.sign(pred_delta[da_idx]) == np.sign(true_delta[da_idx]))), 4) if da_idx else None,
+            "pearson_all":           safe_r(pred_mean, truth_mean),
+            "pearson_de":            safe_r(pred_mean[de_idx], truth_mean[de_idx]),
+            "pearson_da":            safe_r(pred_mean[da_idx], truth_mean[da_idx]) if da_idx else None,
+            "pearson_delta_all":     safe_r(pred_delta, true_delta),
+            "mse":                   round(float(mean_squared_error(truth_mean, pred_mean)), 6),
+            "mse_delta_de":          round(float(mean_squared_error(true_delta[de_idx], pred_delta[de_idx])), 6),
+            "mse_delta_da":          round(float(mean_squared_error(true_delta[da_idx], pred_delta[da_idx])), 6) if da_idx else None,
+            "n_da_in_panel":         len(da_idx),
+        }
+        per_pert.append(record)
+        # Save to Drive after every single perturbation
+        save_partial_results(per_pert, dataset_name)
 
-        # ── Delta metrics ─────────────────────────────────────────────────────
-        rd_all, _ = pearsonr(pred_delta, true_delta)
-        rd_de,  _ = pearsonr(pred_delta[de_idx], true_delta[de_idx])
-        rd_da,  _ = pearsonr(pred_delta[da_idx], true_delta[da_idx]) if len(da_idx) > 1 else (np.nan, None)
+    # Aggregate
+    def safe_mean(key):
+        vals = [r[key] for r in per_pert if r.get(key) is not None]
+        return round(float(np.mean(vals)), 4) if vals else None
 
-        # ── Sign accuracy ─────────────────────────────────────────────────────
-        sign_de = np.mean(np.sign(pred_delta[de_idx]) == np.sign(true_delta[de_idx]))
-        sign_da = np.mean(np.sign(pred_delta[da_idx]) == np.sign(true_delta[da_idx])) if da_idx else np.nan
-
-        # ── MSE ───────────────────────────────────────────────────────────────
-        mse = mean_squared_error(truth_mean, pred_mean)
-        mse_d_de = mean_squared_error(true_delta[de_idx], pred_delta[de_idx])
-        mse_d_da = mean_squared_error(true_delta[da_idx], pred_delta[da_idx]) if da_idx else np.nan
-
-        pearson_all_list.append(r_all); pearson_de_list.append(r_de)
-        pearson_da_list.append(r_da)
-        pearson_delta_all_list.append(rd_all); pearson_delta_de_list.append(rd_de)
-        pearson_delta_da_list.append(rd_da)
-        sign_acc_de_list.append(sign_de); sign_acc_da_list.append(sign_da)
-        mse_list.append(mse); mse_delta_de_list.append(mse_d_de)
-        mse_delta_da_list.append(mse_d_da)
-        per_pert.append({"condition": cond, "pearson_all": round(float(r_all), 4),
-                          "pearson_de": round(float(r_de), 4),
-                          "pearson_delta_de": round(float(rd_de), 4)})
-
-    def safe_mean(lst):
-        arr = [x for x in lst if not np.isnan(x)]
-        return round(float(np.mean(arr)), 4) if arr else None
-
-    return {
-        # ── Primary (delta-based, Zihan recommended) ──────────────────────────
-        "pearson_delta_top20_deg":   safe_mean(pearson_delta_de_list),
-        "pearson_delta_da_markers":  safe_mean(pearson_delta_da_list),
-        "sign_accuracy_top20_deg":   safe_mean(sign_acc_de_list),
-        "sign_accuracy_da_markers":  safe_mean(sign_acc_da_list),
-        # ── Secondary (absolute) ──────────────────────────────────────────────
-        "pearson_all_genes":         safe_mean(pearson_all_list),
-        "pearson_top20_deg":         safe_mean(pearson_de_list),
-        "pearson_da_markers":        safe_mean(pearson_da_list),
-        "pearson_delta_all_genes":   safe_mean(pearson_delta_all_list),
-        "mse":                       safe_mean(mse_list),
-        "mse_delta_top20_deg":       safe_mean(mse_delta_de_list),
-        "mse_delta_da_markers":      safe_mean(mse_delta_da_list),
-        # ── Metadata ─────────────────────────────────────────────────────────
-        "n_test_perturbations":      len(per_pert),
-        "da_markers_in_panel":       len(da_idx),
-    }, per_pert
+    keys = ["pearson_delta_de", "pearson_delta_da", "sign_accuracy_de", "sign_accuracy_da",
+            "pearson_all", "pearson_de", "pearson_da", "pearson_delta_all",
+            "mse", "mse_delta_de", "mse_delta_da"]
+    agg = {k + "_mean": safe_mean(k) for k in keys}
+    agg["n_test_perturbations"] = len(per_pert)
+    agg["da_markers_in_panel"]  = len(da_idx)
+    return agg, per_pert
 
 
-# ── Cell 7: Main training loop — run for each modality ───────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+#  MAIN TRAINING + EVAL LOOP
+# ═══════════════════════════════════════════════════════════════════════════════
 def run_gears(h5ad_path, modality_label, dataset_name):
-    print(f"\n{'='*60}")
-    print(f"  GEARS: {modality_label}")
-    print(f"{'='*60}")
+    print(f"\n{'='*65}")
+    print(f"  GEARS: {modality_label}  |  dataset: {dataset_name}")
+    print(f"{'='*65}")
+
+    # ── Check if final results already exist (full run complete) ──────────────
+    final_path = os.path.join(RESULT_DIR, dataset_name, "gears_metrics_full.json")
+    if os.path.exists(final_path):
+        print(f"  [ckpt] Final results already exist at {final_path} — skipping.")
+        with open(final_path) as f:
+            return json.load(f)
 
     adata = preprocess(h5ad_path, modality_label)
-    train_conds, val_conds, test_conds = make_zero_shot_split(adata)
+    train_conds, val_conds, test_conds = make_zero_shot_split(adata, dataset_name)
 
-    # Split by condition (zero-shot: entire perturbation held out)
     adata_train = adata[adata.obs["condition"].isin(train_conds)].copy()
-    adata_val   = adata[adata.obs["condition"].isin(val_conds)].copy()
-    adata_test  = adata[adata.obs["condition"].isin(test_conds)].copy()
     adata_ctrl  = adata[adata.obs["condition"] == "ctrl"].copy()
+    print(f"  Train: {adata_train.n_obs:,} cells  |  "
+          f"Test conditions: {len(test_conds)}")
 
-    print(f"  Train: {adata_train.n_obs:,} cells | Val: {adata_val.n_obs:,} | Test: {adata_test.n_obs:,}")
-
-    # Build GEARS PertData
+    # ── Build PertData (cached locally; graph download only needed once) ──────
     ds_dir = os.path.join(DATA_DIR, dataset_name)
+
+    # Also cache PertData to Drive so it survives full session resets
+    drive_ds_dir = ckpt_path(dataset_name, "pert_data")
+    local_processed = os.path.join(ds_dir, "perturb_processed.h5ad")
+    drive_processed = os.path.join(drive_ds_dir, "perturb_processed.h5ad")
+
     pert_data = PertData(DATA_DIR)
-    processed_path = os.path.join(ds_dir, "perturb_processed.h5ad")
-    if os.path.exists(processed_path):
-        print("  Loading cached GEARS data...")
+    if os.path.exists(local_processed):
+        print("  [ckpt] Loading GEARS data from local cache...")
+        pert_data.load(data_path=ds_dir)
+    elif os.path.exists(drive_processed):
+        print("  [ckpt] Copying GEARS data from Drive cache to local...")
+        shutil.copytree(drive_ds_dir, ds_dir, dirs_exist_ok=True)
         pert_data.load(data_path=ds_dir)
     else:
-        print("  Processing GEARS data (first run — this takes a few minutes)...")
+        print("  Processing GEARS data (first run — ~5 min)...")
         pert_data.new_data_process(dataset_name=dataset_name, adata=adata_train,
                                     skip_calc_de=False)
+        # Back up to Drive immediately
+        print("  [ckpt] Backing up GEARS data to Drive...")
+        shutil.copytree(ds_dir, drive_ds_dir, dirs_exist_ok=True)
 
-    # Use the manual splits by overriding GEARS' internal split
     pert_data.prepare_split(split="simulation", seed=SEED)
     pert_data.get_dataloader(batch_size=BATCH_SIZE, test_batch_size=BATCH_SIZE)
 
-    # Train
-    print(f"\n  Training GEARS for {EPOCHS} epochs...")
+    # ── Train (skip if checkpoint exists) ────────────────────────────────────
     gears_model = GEARS(pert_data, device=DEVICE)
     gears_model.model_initialize(hidden_size=64)
-    gears_model.train(epochs=EPOCHS)
 
-    # Evaluate
-    print("\n  Evaluating on test set...")
+    trained_from_ckpt = load_model_if_exists(gears_model, dataset_name)
+    if not trained_from_ckpt:
+        print(f"\n  Training GEARS for {EPOCHS} epochs...")
+        gears_model.train(epochs=EPOCHS)
+        save_model(gears_model, dataset_name)
+        print("  Training complete. Checkpoint saved to Drive.")
+    else:
+        # best_model needs to be set for evaluate() to work
+        gears_model.best_model = gears_model.model
+
+    # ── Evaluate ─────────────────────────────────────────────────────────────
+    print("\n  Evaluating test set...")
     test_loader = pert_data.dataloader["test_loader"]
-    test_res = evaluate(test_loader, gears_model.best_model,
-                        gears_model.pert_list, gears_model.device)
+    test_res    = evaluate(test_loader, gears_model.best_model,
+                           gears_model.pert_list, gears_model.device)
 
     gene_names = list(adata.var_names)
-    metrics, per_pert = compute_full_metrics(test_res, adata_ctrl, gene_names, DA_MARKERS)
-    metrics["model"] = "GEARS"
-    metrics["modality"] = modality_label
-    metrics["epochs"] = EPOCHS
-    metrics["split"] = "zero_shot_pert (manual, 10/10% val/test)"
+    metrics, per_pert = compute_full_metrics(
+        test_res, adata_ctrl, gene_names, DA_MARKERS, dataset_name
+    )
+    metrics.update({
+        "model":    "GEARS",
+        "modality": modality_label,
+        "epochs":   EPOCHS,
+        "split":    "zero_shot_pert (manual, 10/10% val/test)",
+    })
 
-    # Save
+    # ── Save final results to Drive ───────────────────────────────────────────
     out_dir = os.path.join(RESULT_DIR, dataset_name)
     os.makedirs(out_dir, exist_ok=True)
-    with open(os.path.join(out_dir, "gears_metrics_full.json"), "w") as f:
+    with open(final_path, "w") as f:
         json.dump(metrics, f, indent=2)
     with open(os.path.join(out_dir, "gears_per_pert.json"), "w") as f:
         json.dump(per_pert, f, indent=2)
+    print(f"\n  [ckpt] Final results saved to Drive: {final_path}")
 
     print(f"\n  === {modality_label} Results ===")
     for k, v in metrics.items():
@@ -297,25 +370,25 @@ def run_gears(h5ad_path, modality_label, dataset_name):
     return metrics
 
 
-# ── Cell 8: Run both modalities ───────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+#  RUN
+# ═══════════════════════════════════════════════════════════════════════════════
 results_i = run_gears(CRISPR_I_PATH, "CRISPRi", "gears_crispri_colab")
 results_a = run_gears(CRISPR_A_PATH, "CRISPRa", "gears_crispra_colab")
 
-# Print comparison summary
+# Summary
 print("\n\n" + "="*70)
 print("  FINAL COMPARISON SUMMARY")
 print("="*70)
-cols = ["pearson_delta_top20_deg", "pearson_delta_da_markers",
-        "sign_accuracy_top20_deg", "sign_accuracy_da_markers",
-        "pearson_top20_deg", "pearson_all_genes", "mse"]
+cols = ["pearson_delta_de_mean", "pearson_delta_da_mean",
+        "sign_accuracy_de_mean", "sign_accuracy_da_mean",
+        "pearson_de_mean", "pearson_all_mean", "mse_mean"]
 print(f"  {'Metric':<35} {'CRISPRi':>10} {'CRISPRa':>10}")
-print(f"  {'-'*55}")
+print(f"  {'-'*57}")
 for col in cols:
     print(f"  {col:<35} {str(results_i.get(col,'—')):>10} {str(results_a.get(col,'—')):>10}")
 
-# Save combined summary
-combined = {"CRISPRi": results_i, "CRISPRa": results_a}
 with open(os.path.join(RESULT_DIR, "gears_colab_summary.json"), "w") as f:
-    json.dump(combined, f, indent=2)
-print(f"\n  Saved: {RESULT_DIR}/gears_colab_summary.json")
-print("  Done! Download the results/gears_colab/ folder.")
+    json.dump({"CRISPRi": results_i, "CRISPRa": results_a}, f, indent=2)
+print(f"\n  Summary saved: {RESULT_DIR}/gears_colab_summary.json")
+print("  All done. Download the results from Google Drive.")
