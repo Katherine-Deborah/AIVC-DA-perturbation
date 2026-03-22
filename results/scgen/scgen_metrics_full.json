@@ -1,0 +1,19 @@
+{
+  "pearson_all_mean": 0.9938,
+  "pearson_de_mean": 0.9523,
+  "pearson_da_mean": 0.9988,
+  "pearson_delta_all_mean": 0.2271,
+  "pearson_delta_de_mean": 0.4422,
+  "pearson_delta_da_mean": 0.1682,
+  "sign_accuracy_de_mean": 0.7375,
+  "sign_accuracy_da_mean": 0.4778,
+  "mse_mean": 0.0025,
+  "mse_delta_de_mean": 0.0565,
+  "mse_delta_da_mean": 0.0023,
+  "condition_mean": null,
+  "n_da_in_panel": 18,
+  "n_test_perturbations": 20,
+  "model": "scGen",
+  "modality": "CRISPRi",
+  "eval_protocol": "seen (20 perts, 80/20 cell split)"
+}

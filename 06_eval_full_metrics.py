@@ -103,7 +103,14 @@ def aggregate(per_pert_list):
     keys = [k for k in per_pert_list[0] if k != "n_da_in_panel"]
     agg = {}
     for k in keys:
-        vals = [d[k] for d in per_pert_list if not np.isnan(d[k])]
+        vals = []
+        for d in per_pert_list:
+            v = d[k]
+            try:
+                if v is not None and not np.isnan(float(v)):
+                    vals.append(float(v))
+            except (TypeError, ValueError):
+                pass
         agg[k + "_mean"] = round(float(np.mean(vals)), 4) if vals else None
     agg["n_da_in_panel"]       = per_pert_list[0]["n_da_in_panel"]
     agg["n_test_perturbations"] = len(per_pert_list)
@@ -169,7 +176,7 @@ def evaluate_scgen(cfg):
     scgen.SCGEN.setup_anndata(adata_train, batch_key="perturbation",
                                labels_key="cell_type")
     model = scgen.SCGEN.load(cfg["model_dir"], adata=adata_train)
-    model.eval()
+    model.module.eval()
 
     ctrl_train    = adata_train[adata_train.obs["perturbation"] == "ctrl"].copy()
     z_ctrl_train  = encode_scgen(model, ctrl_train)
@@ -221,7 +228,7 @@ def evaluate_scgen(cfg):
     agg["eval_protocol"] = f"seen ({EVAL_PERTS} perts, 80/20 cell split)"
     with open(cfg["out_scgen"], "w") as f:
         json.dump(agg, f, indent=2)
-    print(f"\n  Saved → {cfg['out_scgen']}")
+    print(f"\n  Saved -> {cfg['out_scgen']}")
     return agg
 
 
@@ -270,7 +277,7 @@ def evaluate_baseline(cfg):
     agg["eval_protocol"] = f"seen ({EVAL_PERTS} perts)"
     with open(cfg["out_base"], "w") as f:
         json.dump(agg, f, indent=2)
-    print(f"  Saved → {cfg['out_base']}")
+    print(f"  Saved -> {cfg['out_base']}")
     return agg
 
 

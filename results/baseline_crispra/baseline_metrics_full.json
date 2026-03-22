@@ -1,0 +1,19 @@
+{
+  "pearson_all_mean": 0.9956,
+  "pearson_de_mean": 0.9738,
+  "pearson_da_mean": 0.9964,
+  "pearson_delta_all_mean": 0.5864,
+  "pearson_delta_de_mean": 0.5912,
+  "pearson_delta_da_mean": 0.6277,
+  "sign_accuracy_de_mean": 0.92,
+  "sign_accuracy_da_mean": 0.4933,
+  "mse_mean": 0.0018,
+  "mse_delta_de_mean": 0.0832,
+  "mse_delta_da_mean": 0.0026,
+  "condition_mean": null,
+  "n_da_in_panel": 15,
+  "n_test_perturbations": 20,
+  "model": "Mean Baseline",
+  "modality": "CRISPRa",
+  "eval_protocol": "seen (20 perts)"
+}

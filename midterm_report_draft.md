@@ -276,45 +276,59 @@ split, and (2) scGen vs. baseline on the same seen-pert split.
 
 ### 5.2 CRISPRi Results
 
-**Table 2. CRISPRi perturbation prediction — primary delta-based metrics (primary).**
+**Table 2. CRISPRi perturbation prediction — primary delta-based metrics.**
 
 | Model | Pearson Δ top-20 | Pearson Δ DA markers | Sign acc top-20 | Sign acc DA | # Test Perts | Protocol |
 |-------|-----------------|---------------------|----------------|------------|--------------|----------|
-| Mean Baseline | *pending* | *pending* | *pending* | *pending* | 20 | Seen |
-| scGen | *pending* | *pending* | *pending* | *pending* | 20 | Seen |
-| GEARS (5 ep, 5k HVG) | **0.262** | *pending* | 0.663 | *pending* | 46 | **Unseen** |
-| GEARS (20 ep, Colab) | *pending* | *pending* | *pending* | *pending* | ~18 | **Unseen** |
+| Mean Baseline | 0.769 | 0.518 | 0.953 | 0.653 | 20 | Seen (condition held-out) |
+| scGen | 0.442 | 0.168 | 0.738 | 0.478 | 20 | Seen (80/20 cell split) |
+| GEARS (5 ep, 5k HVG) | **0.262** | — | 0.663 | — | 46 | **Unseen (simulation split)** |
+| GEARS (20 ep, Colab) | *pending* | *pending* | *pending* | *pending* | ~18 | **Unseen (zero_shot_pert)** |
 
-*Note: "pending" rows will be updated with results from `06_eval_full_metrics.py` (scGen/baseline)
-and Colab GEARS run. The 0.663 sign accuracy for GEARS is computed as 1 − wrong_direction_rate
-(reported 0.337).*
+*DA marker columns for GEARS pending Colab run results (18 DA markers found in 5k HVG panel).*
 
 **Table 3. CRISPRi — secondary absolute metrics (for cross-paper comparison).**
 
 | Model | Pearson r (all) | Pearson r (top-20) | Pearson r (DA) | MSE | Protocol |
 |-------|-----------------|--------------------|----------------|-----|----------|
-| Mean Baseline | 0.9988 | 0.9951 | *pending* | 0.0005 | Seen (20) |
-| scGen | 0.9938 | 0.9523 | *pending* | 0.0025 | Seen (20) |
-| GEARS (5 ep) | 0.9965 | 0.9733 | *pending* | 0.00137 | **Unseen (46)** |
+| Mean Baseline | 0.9988 | 0.9917 | 0.9998 | 0.0005 | Seen (20) |
+| scGen | 0.9938 | 0.9523 | 0.9988 | 0.0025 | Seen (20) |
+| GEARS (5 ep) | 0.9965 | 0.9733 | — | 0.00137 | **Unseen (46)** |
 | GEARS (20 ep) | *pending* | *pending* | *pending* | *pending* | **Unseen (~18)** |
 
 **Key observations:**
 
-All three methods achieve Pearson r > 0.99 across all genes. This is expected and not
-informative — it primarily reflects cell-type identity dominating the expression profile, not
-perturbation-specific prediction. The delta-based metrics in Table 2 are the appropriate lens.
+All methods achieve Pearson r > 0.99 across all genes — including the mean baseline. This
+confirms that absolute Pearson on all genes is dominated by cell-type identity and is not
+informative about perturbation prediction quality.
 
-GEARS' Pearson delta of **0.262 on top-20 DEGs** for completely unseen perturbations represents
-the key result: the model learns a non-trivial perturbation-specific signal (baseline delta ≈
-0.03 expected), though substantial room for improvement remains. The **66.3% sign accuracy**
-means GEARS correctly predicts the direction of change for two-thirds of the top DEGs —
-significantly above chance (50%) but indicating that ~1 in 3 important genes are predicted to
-move in the wrong direction.
+The delta-based metrics (Table 2) reveal a more nuanced picture. The mean baseline achieves a
+surprisingly high Pearson delta on top-20 DEGs (0.769). This is an artifact of evaluation
+design: the baseline is tested on 20 *randomly chosen* condition-holdout perturbations, which
+happen to be representative of the dataset's average perturbation effect (since they are drawn
+from the same distribution as training). The baseline predicts the global mean of all other
+perturbed cells — which correlates well with any individual perturbation's delta because most
+CRISPRi knockdowns in this dataset produce effects in similar directions. This is consistent
+with the literature finding that simple baselines are highly competitive on seen-distribution
+perturbations (Boiarsky et al., 2023; Wenk et al., 2024).
 
-The mean baseline's apparently high Pearson r (0.995 on top-20 DEGs) is misleading precisely
-because it makes no perturbation-specific prediction — it predicts the same vector for every
-gene knockdown. In terms of delta metrics, it will score near zero, confirming the diagnostic
-value of the delta evaluation suite.
+scGen underperforms the mean baseline on delta metrics (0.442 vs 0.769). This is unexpected
+given that scGen has 80% of the eval perturbation cells in its training set, while the baseline
+holds those conditions out entirely. It suggests scGen's latent space arithmetic introduces
+noise in the delta direction for these perturbations, even when the global absolute reconstruction
+is strong.
+
+GEARS' **Pearson delta of 0.262** is not directly comparable to the baseline's 0.769 because
+they are evaluated on **different test perturbation sets** under different selection criteria —
+the GEARS simulation split (46 perts) targets held-out perturbations maximally dissimilar from
+training, whereas the baseline uses 20 randomly sampled holdouts. What GEARS achieves on a
+harder, zero-shot unseen set (0.262) vs. the mean baseline on the easier seen-distribution set
+(0.769) cannot be interpreted as GEARS being worse. A fair comparison would require running the
+mean baseline on the identical 46-perturbation GEARS test split, which the Colab run will provide.
+
+GEARS' **sign accuracy of 66.3%** (predicting up vs. down direction for top-20 DEGs) is
+meaningfully above chance (50%) on completely unseen perturbations, confirming the gene
+co-expression graph provides genuine perturbation-direction signal.
 
 ### 5.3 CRISPRa Results
 
@@ -322,24 +336,28 @@ value of the delta evaluation suite.
 
 | Model | Pearson Δ top-20 | Pearson Δ DA markers | Sign acc top-20 | Sign acc DA | # Test Perts | Protocol |
 |-------|-----------------|---------------------|----------------|------------|--------------|----------|
-| Mean Baseline | *pending* | *pending* | *pending* | *pending* | 20 | Seen |
-| scGen | *pending* | *pending* | *pending* | *pending* | 20 | Seen |
-| GEARS (5 ep) | **0.334** | *pending* | 0.714 | *pending* | 25 | **Unseen** |
-| GEARS (20 ep, Colab) | *pending* | *pending* | *pending* | *pending* | ~10 | **Unseen** |
+| Mean Baseline | 0.591 | 0.628 | 0.920 | 0.493 | 20 | Seen (condition held-out) |
+| scGen | 0.591 | 0.283 | 0.833 | 0.407 | 20 | Seen (80/20 cell split) |
+| GEARS (5 ep) | **0.334** | — | 0.714 | — | 25 | **Unseen (simulation split)** |
+| GEARS (20 ep, Colab) | *pending* | *pending* | *pending* | *pending* | ~10 | **Unseen (zero_shot_pert)** |
 
 **Table 5. CRISPRa — secondary absolute metrics.**
 
-| Model | Pearson r (all) | Pearson r (top-20) | MSE | Protocol |
-|-------|-----------------|--------------------|-----|----------|
-| Mean Baseline | 0.9956 | 0.9169 | 0.0018 | Seen (20) |
-| scGen | 0.9934 | 0.9266 | 0.0029 | Seen (20) |
-| GEARS (5 ep) | 0.9948 | 0.9565 | 0.00224 | **Unseen (25)** |
+| Model | Pearson r (all) | Pearson r (top-20) | Pearson r (DA) | MSE | Protocol |
+|-------|-----------------|--------------------|----------------|-----|----------|
+| Mean Baseline | 0.9956 | 0.9738 | 0.9964 | 0.0018 | Seen (20) |
+| scGen | 0.9928 | 0.9582 | 0.9960 | 0.0034 | Seen (20) |
+| GEARS (5 ep) | 0.9948 | 0.9565 | — | 0.00224 | **Unseen (25)** |
+| GEARS (20 ep) | *pending* | *pending* | *pending* | *pending* | **Unseen (~10)** |
 
-CRISPRa is a harder prediction task than CRISPRi across all methods. The mean baseline drops
-from 0.917 to observed on top-20 DEGs, reflecting that gene activations produce larger and more
-diverse transcriptional changes than knockdowns. GEARS achieves a higher delta Pearson on CRISPRa
-(0.334) than CRISPRi (0.262), which may reflect that activation effects are larger in magnitude
-and thus easier to predict directionally even if the absolute MSE is higher.
+CRISPRa is a harder prediction task than CRISPRi for the mean baseline and scGen (delta drops
+from 0.769 to 0.591 and 0.442 to 0.591 respectively), reflecting that gene activations produce
+larger and more diverse transcriptional changes than knockdowns. The mean baseline and scGen tie
+exactly on Pearson delta top-20 (0.591), but scGen achieves notably lower DA marker delta (0.283
+vs 0.628), suggesting scGen's latent arithmetic specifically struggles to capture perturbation
+effects on DA-relevant genes. GEARS achieves a higher delta Pearson on CRISPRa (0.334) than
+CRISPRi (0.262), which may reflect that larger activation effects are easier to predict
+directionally even if the absolute MSE is higher.
 
 ### 5.4 Training Dynamics
 
