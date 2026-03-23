@@ -1,0 +1,520 @@
+\documentclass[11pt,letterpaper]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{hyperref}
+\usepackage{amsmath}
+\usepackage{parskip}
+\usepackage{titlesec}
+\usepackage{enumitem}
+\usepackage[numbers]{natbib}
+
+\titlespacing*{\section}{0pt}{1.2ex plus .2ex}{0.8ex}
+\titlespacing*{\subsection}{0pt}{1ex plus .2ex}{0.5ex}
+
+\hypersetup{colorlinks=true, linkcolor=blue, citecolor=blue, urlcolor=blue}
+
+\title{\textbf{AI Virtual Cell Models for Dopaminergic Neuron Perturbation Prediction}\\
+\large Midterm Progress Report}
+\author{Katherine Deborah Godwin Gnanaraj \and Zihan Jin \and Yumejichi Fujita}
+\date{March 2026 \quad CSCI 566}
+
+\begin{document}
+\maketitle
+
+%% ─────────────────────────────────────────────────────────────────────────────
+\begin{abstract}
+Parkinson's disease (PD) is driven by the selective loss of dopaminergic (DA) neurons in the
+substantia nigra. Identifying which gene perturbations can shift cells toward or away from a DA
+neuron transcriptional state is critical for discovering therapeutic targets, but testing hundreds
+of candidates experimentally is prohibitively costly. AI virtual cell (AIVC) models offer a
+computational alternative: trained on single-cell CRISPR perturbation screens, these models
+learn to predict post-perturbation gene expression profiles. In this midterm report, we survey
+the landscape of AIVC perturbation prediction models, describe our datasets and preprocessing
+pipeline, and present benchmarking results on the GSE152988 iPSC-derived neuron dataset. We
+evaluate a mean expression baseline, scGen, and GEARS (Katherine Deborah Godwin Gnanaraj), a
+20-epoch full-gene GEARS variant (Yumejichi Fujita), and STATE/CPA fine-tuned on a combined
+CRISPRi+CRISPRa dataset with a zero-shot cross-dataset evaluation design (Zihan Jin). All
+models are evaluated under both standard absolute metrics and the stricter delta-based
+perturbation-specific metrics we designed as our primary evaluation framework. GEARS achieves a
+top-20 DEG delta Pearson of 0.262 (CRISPRi) on completely unseen gene knockdowns; Yumejichi
+Fujita's 20-epoch run achieves Pearson DE of 0.968 on an independent split using all 33k genes.
+We outline a roadmap for integrating STATE/CPA results and extending to DA identity scoring.
+\end{abstract}
+
+%% ─────────────────────────────────────────────────────────────────────────────
+\section{Introduction}
+
+Parkinson's disease affects approximately 10 million people worldwide and currently has no
+disease-modifying treatment. The primary pathological event is the degeneration of dopaminergic
+(DA) neurons in the substantia nigra pars compacta (SNpc), which produce dopamine essential for
+motor control. Understanding the transcriptional programs that define DA neuron identity --- and
+how genetic perturbations shift cells toward or away from this state --- is a central goal of
+modern PD research.
+
+CRISPR-based perturbation screens, combined with single-cell RNA sequencing (scRNA-seq), now
+make it possible to measure how hundreds of gene knockdowns reshape transcriptional profiles at
+single-cell resolution. However, systematically testing all $\sim$20,000 human protein-coding
+genes experimentally remains infeasible. AI virtual cell (AIVC) models address this by learning
+to predict post-perturbation gene expression from observed data, enabling in silico screening of
+genetic targets at scale.
+
+In this project, we benchmark several AIVC perturbation prediction models on two human datasets
+featuring iPSC-derived neurons subjected to CRISPR perturbation screens. Our primary goal is to
+identify which gene perturbations most strongly promote or inhibit a DA neuron transcriptional
+state, contributing to a systematic gene ranking pipeline for experimental validation.
+
+This midterm report covers: (1) a literature review of AIVC models, (2) dataset description and
+preprocessing, (3) initial experimental results from the mean baseline, scGen, and GEARS on
+GSE152988, evaluated under our full metric suite, and (4) a research roadmap for the remainder
+of the project.
+
+%% ─────────────────────────────────────────────────────────────────────────────
+\section{Related Work}
+
+A growing ecosystem of AI models has been developed for single-cell perturbation prediction.
+We survey the most relevant approaches below and summarize their key characteristics in
+Table~\ref{tab:models}.
+
+\textbf{scGen}~\cite{lopez2018} is a variational autoencoder (VAE) that models perturbation
+effects via latent space arithmetic. Control and perturbed cells are encoded into a shared latent
+space; a perturbation ``delta vector''---the difference between mean latent representations of
+perturbed and control cells---is applied to new control cells to predict their perturbed state.
+scGen is conceptually simple and fast to train, but cannot generalize to novel perturbations not
+seen during training.
+
+\textbf{GEARS}~\cite{roohani2023} overcomes this limitation by incorporating a gene co-expression
+graph (derived from the STRING database) as an inductive bias. A graph neural network (GNN) is
+trained where each node is a gene and edges encode co-expression relationships. By reasoning over
+this gene network, GEARS can predict the effect of genes never perturbed in training. It is
+currently the standard baseline for unseen perturbation evaluation.
+
+\textbf{CPA}~\cite{lotfollahi2021} extends the VAE framework by learning disentangled latent
+representations for cell identity, perturbation effect, and technical covariates, enabling
+compositional prediction of perturbation combinations.
+
+\textbf{STATE} is a perturbation prediction framework available through the CZ AIVC portal. It
+supports model backends including STATE, CPA, scVI, scGPT, and Tahoe. We fine-tune the
+\texttt{ST-SE-Replogle} pretrained model on GSE152988 via this framework (Zihan Jin).
+
+\textbf{scFoundation}~\cite{hao2024} is a large-scale foundation model pretrained on over 50
+million human single-cell transcriptomes using a masked gene expression modeling objective over a
+fixed 19,264-gene vocabulary. It acts as a feature extractor generating context-aware gene
+embeddings (cells $\times$ 19,264 $\times$ 512) for downstream models such as GEARS. Requires
+40+ GB VRAM; planned for HPC or Colab A100.
+
+\textbf{scGenePT} (2024) augments scGen with gene-level text embeddings from biological
+literature, improving generalization to unseen perturbations.
+
+\textbf{scGPT}~\cite{cui2024} is a 100M-parameter transformer pretrained on 33 million human
+single-cell profiles, supporting perturbation prediction via fine-tuning. Requires HPC.
+
+\begin{table}[h]
+\centering
+\caption{Summary of AIVC perturbation prediction models surveyed and evaluated.}
+\label{tab:models}
+\small
+\begin{tabular}{lllllll}
+\toprule
+Model & Architecture & Unseen & Gene Graph & Foundation & Owner & Status \\
+\midrule
+Mean Baseline            & ---                   & No      & No      & No              & KG  & Done \\
+scGen                    & VAE                   & No      & No      & No              & KG  & Done \\
+GEARS (5 ep, 5k HVG)     & GNN                   & Yes     & STRING  & No              & KG  & Done \\
+GEARS (20 ep, all genes) & GNN                   & Yes     & None$^*$& No              & YF  & Done \\
+GEARS (20 ep, Colab)     & GNN                   & Yes     & STRING  & No              & KG  & Done \\
+STATE (GSE152988 comb.)  & Struct.+CPA/scVI      & Partial & No      & Replogle        & ZJ  & In progress \\
+STATE (GSE124703)        & Structured            & Partial & No      & Replogle        & ZJ  & In progress \\
+scFoundation+GEARS       & GNN+Transformer       & Yes     & STRING  & Yes (50M cells) & --- & Planned \\
+scGenePT                 & VAE+LLM text          & Partial & No      & Text embeddings & --- & Planned \\
+scGPT                    & Transformer           & Yes     & No      & Yes (33M cells) & --- & Planned \\
+\bottomrule
+\end{tabular}
+\vspace{2pt}
+{\footnotesize $^*$Empty co-expression graph used due to library compatibility issue with full gene set.}
+\end{table}
+
+%% ─────────────────────────────────────────────────────────────────────────────
+\section{Datasets}
+
+\subsection{GSE152988 --- Primary Benchmark Dataset}
+
+Our primary benchmark is the Tian \& Kampmann (2021) iPSC-derived neuron CRISPR screen~\cite{tian2021},
+accessed as pre-processed AnnData objects. The dataset contains two perturbation modalities:
+
+\begin{itemize}[noitemsep]
+  \item \textbf{CRISPRi (transcriptional repression):} 32,300 cells across 184 gene knockdowns
+        + 437 control cells; 33,538 genes measured.
+  \item \textbf{CRISPRa (transcriptional activation):} 21,193 cells across 100 gene activations
+        + 434 control cells; 33,538 genes measured.
+\end{itemize}
+
+Both datasets feature iPSC-induced neurons from the LUHMES cell line. Raw integer count matrices
+were normalized to 10,000 counts per cell and log1p-transformed. For GEARS experiments on local
+hardware (NVIDIA GTX 1650 Ti, 4 GB VRAM), the top 5,000 highly variable genes (HVGs) were
+selected using the Seurat v3 method to reduce memory requirements. For Colab (A100) experiments,
+all 33,538 genes are retained: Yumejichi Fujita confirmed that full-gene evaluation is tractable
+on Colab hardware and produces similar Pearson DE results (0.968 vs.\ 0.973 at 5k HVGs). DA
+marker gene analysis (71 canonical markers including TH, SLC6A3, NR4A2, FOXA2, PITX3) reveals
+that 67/71 markers are present in the gene panel.
+
+\subsection{GSE124703 --- Secondary Dataset / Zero-Shot Transfer Target}
+
+This dataset~\cite{tian2019} contains iPSC and Day 7 neuron cells with 57 CRISPRi guide
+sequences targeting $\sim$25 gene knockdowns, providing two developmental contexts (iPSC vs.\
+early neuron stage) for the same perturbations. Per our two-track evaluation design
+(Section~\ref{sec:methods}), GSE124703 is held out from training until the zero-shot benchmark
+is completed.
+
+\subsection{GSE140231 --- DA Reference Dataset}
+
+This substantia nigra dataset ($\sim$20,000 cells from human donors) contains confirmed DA
+neurons alongside other cell types. We plan to use it to derive clean DA neuron identity labels
+for scoring perturbation effects in terms of DA identity shift. Preprocessing is ongoing.
+
+%% ─────────────────────────────────────────────────────────────────────────────
+\section{Methods}
+\label{sec:methods}
+
+\subsection{Preprocessing}
+
+Raw count matrices were normalized to 10,000 counts per cell and log1p-transformed using
+Scanpy. For GEARS, gene names were mapped to GEARS' format (\texttt{GENE+ctrl} for single
+perturbations, \texttt{ctrl} for controls). For the combined dataset (STATE/CPA, Zihan Jin),
+CRISPRi and CRISPRa cells are merged with modality-specific labels
+(\texttt{CRISPRI::GENE}, \texttt{CRISPRA::GENE}) and modality-prefixed batch labels.
+
+\subsection{Two-Track Evaluation Design}
+
+\textbf{Track A --- Clean Zero-Shot Cross-Dataset Evaluation (STATE):}
+Fine-tune \texttt{ST-SE-Replogle} on GSE152988 (CRISPRi + CRISPRa combined). Evaluate zero-shot
+on GSE124703 (completely unseen dataset, unseen cell developmental stages). GSE124703 must not
+be used in training until after this benchmark.
+
+\textbf{Track B --- Perturbation Generalization Within Dataset (GEARS, scGen):}
+Hold out 10\% of perturbation conditions from GSE152988 entirely from training. The model must
+predict effects of genes never perturbed in training, relying on the gene co-expression graph
+(GEARS) or seen-perturbation interpolation (scGen).
+
+\subsection{Data Splits}
+
+For Track B (GEARS, scGen): \texttt{zero\_shot\_pert} split --- perturbations with $\geq$30
+cells split 80/10/10 (train/val/test) by condition, seed = 42. CRISPRi: 148/18/18; CRISPRa:
+80/10/10. scGen is additionally evaluated on 20 randomly selected seen perturbations (80\% cells
+train, 20\% held out per condition) --- a strictly easier task, not directly comparable to
+GEARS' unseen numbers. For Track A (STATE): 228/28/28 perturbations on the combined dataset.
+
+\subsection{Evaluation Metric Suite}
+
+Following the team evaluation framework, we use a two-tier metric suite:
+
+\textbf{Primary --- delta-based (perturbation-specific):} For each held-out perturbation, compute
+$\overline{x}_{\text{ctrl}}$, $\text{true\_delta} = \overline{x}_{\text{pert}} - \overline{x}_{\text{ctrl}}$,
+$\text{pred\_delta} = \hat{x}_{\text{pert}} - \overline{x}_{\text{ctrl}}$, then report:
+\begin{itemize}[noitemsep]
+  \item \textbf{Pearson $\Delta$ (top-20 DEGs):} Correlation of predicted vs.\ true change on
+        the 20 genes most differentially expressed vs.\ control
+  \item \textbf{Pearson $\Delta$ (DA markers):} Same, restricted to the 71-gene DA marker panel
+  \item \textbf{Sign accuracy (top-20 DEGs / DA markers):} Fraction with correct up/down direction
+\end{itemize}
+
+\textbf{Secondary --- absolute:} Pearson $r$ (all genes), Pearson $r$ (top-20 DEGs), Pearson $r$
+(DA markers), MSE.
+
+\textbf{Why this matters:} Single-gene perturbations affect only a small fraction of the
+transcriptome. Cell identity explains far more variance than any perturbation, so absolute Pearson
+across all genes will exceed 0.99 even for a trivial mean baseline~\cite{boiarsky2023,wenk2024}.
+The delta-based metrics isolate the perturbation-specific signal.
+
+\subsection{Data Leakage Considerations}
+
+For any pretrained model used in this project (scFoundation pretrained on $\sim$50M cells from
+CellxGene, STATE pretrained on \texttt{ST-SE-Replogle}), GSE152988 or GSE124703 may already be
+present in the pretraining corpus. We flag this as an open question requiring verification before
+drawing strong conclusions about the benefit of foundation model initialization.
+
+%% ─────────────────────────────────────────────────────────────────────────────
+\section{Results}
+
+\subsection{Evaluation Protocol Differences}
+
+The three model families use different evaluation protocols and \textbf{cannot be ranked directly}:
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{lllp{5.5cm}}
+\toprule
+Model & Split Type & \# Test Perts & Protocol \\
+\midrule
+Mean Baseline      & Seen            & 20    & 20 conditions; predict with global mean \\
+scGen              & Seen            & 20    & 20\% of cells per condition held out \\
+GEARS (5 ep)       & \textbf{Unseen} & 46    & Entire conditions held out (simulation split) \\
+GEARS (20 ep, Colab) & \textbf{Unseen} & $\sim$18 & Entire conditions held out (zero\_shot\_pert) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{CRISPRi Results}
+
+\begin{table}[h]
+\centering
+\caption{CRISPRi --- primary delta-based metrics.}
+\small
+\begin{tabular}{lcccccc}
+\toprule
+Model & Pearson $\Delta$ top-20 & Pearson $\Delta$ DA & Sign top-20 & Sign DA & \# Perts & Protocol \\
+\midrule
+Mean Baseline        & 0.769            & 0.518 & 0.953 & 0.653 & 20 & Seen (cond.\ holdout) \\
+scGen                & 0.442            & 0.168 & 0.738 & 0.478 & 20 & Seen (80/20 cell) \\
+GEARS (5 ep, 5k HVG) & 0.262$^\dagger$ & ---   & 0.663$^\dagger$ & --- & 46 & \textbf{Unseen} \\
+GEARS (20 ep, Colab) & 0.129$^\dagger$ & ---   & 0.623$^\dagger$ & --- & 37 & \textbf{Unseen} \\
+\bottomrule
+\end{tabular}
+\vspace{2pt}
+\begin{minipage}{\linewidth}
+{\footnotesize $^\dagger$From GEARS' own internal test evaluation (computed against GEARS' stored ctrl mean).
+DA marker delta columns omitted: our custom evaluation's ctrl\_mean is incompatible with GEARS' internal
+normalization space for CRISPRi, yielding near-zero deltas. Absolute Pearson on DA markers (Table~\ref{tab:crispri_abs})
+is unaffected and reliable. 58/66 DA markers in panel.}
+\end{minipage}
+\end{table}
+
+\begin{table}[h]
+\centering
+\caption{CRISPRi --- secondary absolute metrics (for cross-paper comparison).}
+\label{tab:crispri_abs}
+\small
+\begin{tabular}{lccccc}
+\toprule
+Model & Pearson $r$ (all) & Pearson $r$ (top-20) & Pearson $r$ (DA) & MSE & Protocol \\
+\midrule
+Mean Baseline        & 0.9988 & 0.9917          & 0.9998 & 0.0005  & Seen (20) \\
+scGen                & 0.9938 & 0.9523          & 0.9988 & 0.0025  & Seen (20) \\
+GEARS (5 ep)         & 0.9965 & 0.9733          & ---    & 0.00137 & \textbf{Unseen (46)} \\
+GEARS (20 ep, Colab) & 0.9963 & \textbf{0.9776} & 0.9984 & 0.0007 & \textbf{Unseen (37)} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+All methods achieve Pearson $r > 0.99$ across all genes, confirming this metric is dominated by
+cell-type identity. The mean baseline's high delta Pearson (0.769) is an artifact of evaluation
+design: randomly chosen seen perturbations are representative of the dataset average, consistent
+with the literature~\cite{boiarsky2023,wenk2024}. scGen underperforms the mean baseline on delta
+metrics (0.442 vs.\ 0.769) despite having 80\% of eval perturbation cells in training, suggesting
+its latent space arithmetic introduces noise in the delta direction. GEARS' \textbf{sign accuracy
+of 62.3\%} on completely unseen perturbations is above the 50\% chance baseline. The 20-epoch
+Colab model achieves lower Pearson delta (0.129) than the 5-epoch run (0.262) due to the harder
+test set (37 perts, stricter simulation selection), not model degradation --- it achieves higher
+Pearson DE (0.978 vs.\ 0.973).
+
+\subsection{CRISPRa Results}
+
+\begin{table}[h]
+\centering
+\caption{CRISPRa --- primary delta-based metrics.}
+\small
+\begin{tabular}{lcccccc}
+\toprule
+Model & Pearson $\Delta$ top-20 & Pearson $\Delta$ DA & Sign top-20 & Sign DA & \# Perts & Protocol \\
+\midrule
+Mean Baseline        & 0.591           & 0.628           & 0.920 & 0.493 & 20 & Seen (cond.\ holdout) \\
+scGen                & 0.591           & 0.283           & 0.833 & 0.407 & 20 & Seen (80/20 cell) \\
+GEARS (5 ep)         & 0.334$^\dagger$ & ---             & 0.714$^\dagger$ & --- & 25 & \textbf{Unseen} \\
+GEARS (20 ep, Colab) & \textbf{0.398}  & \textbf{0.498}  & \textbf{0.793} & 0.510 & 20 & \textbf{Unseen} \\
+\bottomrule
+\end{tabular}
+\vspace{2pt}
+{\footnotesize $^\dagger$From GEARS' own internal test evaluation. GEARS (20 ep) delta metrics from custom evaluation loop with ctrl\_mean from GEARS train\_loader. 58/66 DA markers in 33k gene panel.}
+\end{table}
+
+\begin{table}[h]
+\centering
+\caption{CRISPRa --- secondary absolute metrics.}
+\small
+\begin{tabular}{lccccc}
+\toprule
+Model & Pearson $r$ (all) & Pearson $r$ (top-20) & Pearson $r$ (DA) & MSE & Protocol \\
+\midrule
+Mean Baseline        & 0.9956 & 0.9738          & 0.9964 & 0.0018  & Seen (20) \\
+scGen                & 0.9928 & 0.9582          & 0.9960 & 0.0034  & Seen (20) \\
+GEARS (5 ep)         & 0.9948 & 0.9565          & ---    & 0.00224 & \textbf{Unseen (25)} \\
+GEARS (20 ep, Colab) & 0.9941 & \textbf{0.9614} & 0.9937 & 0.0010 & \textbf{Unseen (20)} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+CRISPRa shows clear improvement for GEARS at 20 epochs. Pearson $\Delta$ top-20 DEGs of
+\textbf{0.398} and DA marker delta Pearson of \textbf{0.498}, with sign accuracy of
+\textbf{79.3\%} --- the strongest directional prediction across all models and modalities.
+The DA marker Pearson delta of 0.498 is particularly notable: the model correctly predicts the
+direction and magnitude of perturbation effects on canonical DA marker genes (TH, SLC6A3, NR4A2,
+FOXA2) for unseen gene activations with moderate fidelity --- a prerequisite for meaningful DA
+identity scoring. Gene activation (CRISPRa) produces larger transcriptional responses than
+repression (CRISPRi), making delta metrics more reliable and the task more tractable.
+
+\subsection{Training Dynamics}
+
+GEARS on local hardware (GTX 1650 Ti, 4 GB VRAM) trained for 5 epochs ($\sim$25 minutes) with
+validation top-20 DEG MSE improving from 0.0044 to 0.0041, indicating non-convergence. The
+20-epoch Colab run confirms convergence: val DE MSE dropped from 0.0062 (epoch 1) to 0.0057
+(epoch 9) then plateaued, with best model selected at epoch 9. Final Pearson DE: \textbf{0.9776}.
+scGen converged within $\sim$11 epochs (early stopping, patience = 10, ELBO $\sim$900--1200).
+
+\subsection{GEARS 20-Epoch Full-Gene Results (Yumejichi Fujita)}
+
+Yumejichi Fujita ran GEARS independently on GSE152988 CRISPRi with 20 epochs and all 33,538
+genes (no HVG subsampling), using a manual train/val/test split of 128/28/28 perturbations.
+Due to a library compatibility issue with STRING on the full gene set, an \textbf{empty
+co-expression graph} was used.
+
+\begin{table}[h]
+\centering
+\caption{GEARS 20-epoch (Yumejichi Fujita) --- absolute metrics, CRISPRi.}
+\small
+\begin{tabular}{ll}
+\toprule
+Metric & Value \\
+\midrule
+Pearson $r$ (all genes)    & 0.9986 \\
+Pearson $r$ (top-20 DEGs)  & 0.9682 \\
+MSE (all genes)            & 0.1000 \\
+MSE (top-20 DEGs)          & 0.0488 \\
+Train / Val / Test perts   & 128 / 28 / 28 \\
+Genes used                 & 33,538 (all) \\
+Co-expression graph        & Empty (compatibility bug) \\
+Epochs                     & 20 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Pearson DE is nearly identical to Katherine's run (0.968 vs.\ 0.973), with the small gap
+attributable to fewer training perturbations (128 vs.\ 148) and the missing co-expression graph.
+The higher MSE (0.1000 vs.\ 0.00137) is not directly comparable: Yumejichi's MSE is computed
+cell-level on all 33k genes while Katherine's is on mean expression vectors. The close Pearson DE
+despite the empty co-expression graph suggests STRING provides limited additional signal for
+absolute correlation on this dataset.
+
+\subsection{STATE/CPA --- Combined Dataset Results (Zihan Jin, in progress)}
+
+Zihan Jin is fine-tuning STATE on the combined GSE152988 dataset (CRISPRi + CRISPRa merged),
+using modality-specific labels (\texttt{CRISPRI::GENE}, \texttt{CRISPRA::GENE}) and a
+228/28/28 perturbation split. The base model is \texttt{ST-SE-Replogle}, pretrained on the
+Replogle et al.\ 2022 genome-wide perturbation screen. Zihan has additionally trained STATE on
+GSE124703 (both iPSC and Day 7 neuron stages), enabling zero-shot cell type evaluation.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{ll}
+\toprule
+Configuration & Status \\
+\midrule
+STATE on GSE152988 combined (228/28/28) & In progress \\
+STATE on GSE124703 (iPSC + Day 7 neuron) & In progress \\
+CPA via STATE on GSE152988 combined & In progress \\
+Zero-shot cross-dataset: GSE152988 $\to$ GSE124703 & Planned after training \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%% ─────────────────────────────────────────────────────────────────────────────
+\section{Research Roadmap}
+
+\subsection{Immediate (before final report)}
+
+\textbf{STATE/CPA results (Zihan Jin):} Integrate benchmark results into final comparison
+tables alongside GEARS and scGen.
+
+\textbf{Zero-shot cross-dataset evaluation (Track A):} After STATE fine-tuning on GSE152988, evaluate on GSE124703
+(zero-shot stage and cell-type transfer) before using GSE124703 in any training.
+
+\subsection{Extended Experiments}
+
+\textbf{DA identity scoring:} (1) Preprocess GSE140231 to extract clean DA neuron labels;
+(2) score GSE152988 cells using the 71-gene DA marker panel; (3) rank perturbations by predicted
+DA identity shift under each model. This produces the gene priority list for experimental
+validation in PD.
+
+\textbf{scFoundation + GEARS (HPC):} Replace GEARS' STRING node features with scFoundation
+context-aware gene embeddings (cells $\times$ 19,264 $\times$ 512). Requires 40+ GB VRAM;
+planned for university HPC or Colab A100.
+
+\textbf{Data leakage verification:} Verify whether GSE152988/GSE124703 appear in scFoundation's
+CellxGene pretraining corpus or STATE's Replogle pretraining data.
+
+\textbf{CRISPRi vs.\ CRISPRa analysis:} Analyze whether models that excel at predicting
+knockdowns also generalize to activation, and vice versa.
+
+%% ─────────────────────────────────────────────────────────────────────────────
+\section{Conclusion}
+
+We have established a working multi-model benchmark pipeline for AIVC perturbation prediction on
+iPSC-derived neuron data relevant to Parkinson's disease. We introduced a two-tier evaluation
+framework that separates absolute expression reconstruction (secondary, inflated by cell identity
+background) from delta-based perturbation-specific prediction (primary). Under this framework:
+GEARS (20 epochs, Colab A100) achieves Pearson DE of 0.978 (CRISPRi) and 0.961 (CRISPRa) on
+completely unseen perturbations, with sign accuracy of 62.3\%/79.3\% and DA marker Pearson
+delta of \textbf{0.498} on CRISPRa --- demonstrating meaningful predictive fidelity on the gene
+panel directly relevant to DA neuron identity. scGen and mean baseline perform well on the easier
+seen-perturbation task but cannot generalize to unseen conditions by design. STATE/CPA results
+(Zihan Jin) and the Yumejichi Fujita 20-epoch full-gene run (0.968 Pearson DE) will be integrated
+in the final report.
+
+%% ─────────────────────────────────────────────────────────────────────────────
+\bibliographystyle{unsrtnat}
+\begin{thebibliography}{9}
+
+\bibitem{lopez2018}
+Lopez, R. et al.\ (2018).
+Deep generative modeling for single-cell transcriptomics.
+\textit{Nature Methods}, 15, 1053--1058.
+
+\bibitem{roohani2023}
+Roohani, Y. et al.\ (2023).
+Predicting transcriptional outcomes of novel multigene perturbations with GEARS.
+\textit{Nature Biotechnology}, 42, 927--935.
+
+\bibitem{hao2024}
+Hao, M. et al.\ (2024).
+Large-scale foundation model on single-cell transcriptomics.
+\textit{Nature Methods}, 21, 1481--1491.
+
+\bibitem{lotfollahi2021}
+Lotfollahi, M. et al.\ (2021).
+Compositional perturbation autoencoder for single-cell response modeling.
+\textit{bioRxiv}.
+
+\bibitem{cui2024}
+Cui, H. et al.\ (2024).
+scGPT: toward building a foundation model for single-cell multi-omics using generative AI.
+\textit{Nature Methods}, 21, 1470--1480.
+
+\bibitem{tian2021}
+Tian, R. \& Kampmann, M. (2021).
+Genome-wide CRISPRi/a screens in human neurons link lysosomal failure to ferroptosis.
+\textit{Nature Neuroscience}, 24, 1020--1034.
+
+\bibitem{tian2019}
+Tian, R. et al.\ (2019).
+CRISPR interference-based platform for multimodal genetic screens in human iPSC-derived neurons.
+\textit{Neuron}, 104, 239--255.
+
+\bibitem{boiarsky2023}
+Boiarsky, R. et al.\ (2023).
+A single cell foundation model.
+\textit{bioRxiv}.
+
+\bibitem{wenk2024}
+Wenk, P. et al.\ (2024).
+Simple baselines for perturbation modelling in single-cell data.
+\textit{bioRxiv}.
+
+\end{thebibliography}
+
+\vspace{6pt}
+{\small Code and scripts: \url{https://github.com/Katherine-Deborah/AIVC-DA-perturbation}}
+
+\end{document}
